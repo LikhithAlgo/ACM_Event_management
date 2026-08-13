@@ -1,0 +1,130 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  PARTICIPANT
+}
+
+enum EventType {
+  STANDARD
+  KBC
+}
+
+enum EventStatus {
+  DRAFT
+  READY
+  LIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum MediaType {
+  NONE
+  IMAGE
+  AUDIO
+  VIDEO
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+model User {
+  id           String             @id @default(uuid())
+  email        String             @unique
+  name         String
+  role         Role               @default(PARTICIPANT)
+  googleId     String?            @unique
+  createdAt    DateTime           @default(now())
+  submissions  Submission[]
+  participants EventParticipant[]
+}
+
+model QuizEvent {
+  id              String             @id @default(uuid())
+  name            String
+  description     String?
+  type            EventType          @default(STANDARD)
+  status          EventStatus        @default(DRAFT)
+  maxParticipants Int?
+  startTime       DateTime?
+  endTime         DateTime?
+  enableFFF       Boolean            @default(false)
+  lifelineFifty   Boolean            @default(false)
+  lifelineFlip    Boolean            @default(false)
+  lifelinePhone   Boolean            @default(false)
+  createdBy       String
+  createdAt       DateTime           @default(now())
+  rounds          Round[]
+  submissions     Submission[]
+  participants    EventParticipant[]
+}
+
+model EventParticipant {
+  id          String    @id @default(uuid())
+  eventId     String
+  userId      String
+  joinedAt    DateTime  @default(now())
+  tabSwitches Int       @default(0)
+  event       QuizEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+}
+
+model Round {
+  id               String       @id @default(uuid())
+  eventId          String
+  name             String
+  description      String?
+  roundOrder       Int
+  accessCode       String?
+  shuffleQuestions Boolean      @default(false)
+  shuffleOptions   Boolean      @default(false)
+  event            QuizEvent    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  questions        Question[]
+  submissions      Submission[]
+}
+
+model Question {
+  id            String       @id @default(uuid())
+  roundId       String
+  text          String
+  mediaType     MediaType    @default(NONE)
+  mediaUrl      String?
+  options       Json // [{ id: "A", text: "..." }, ...]
+  correctAnswer String? // A, B, C, or D
+  points        Int          @default(10)
+  timerSeconds  Int          @default(30)
+  difficulty    Difficulty   @default(MEDIUM)
+  explanation   String?
+  round         Round        @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  submissions   Submission[]
+}
+
+model Submission {
+  id            String    @id @default(uuid())
+  userId        String
+  eventId       String
+  roundId       String
+  questionId    String
+  answer        String
+  isCorrect     Boolean
+  timeTakenMs   Int
+  pointsAwarded Int
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event         QuizEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  round         Round     @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  question      Question  @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId])
+}

@@ -4,6 +4,7 @@ import { fetchApi } from '../lib/api';
 import { io, Socket } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import type { Question, QuizEvent, RevealData, LeaderboardEntry } from '../lib/types';
+import { AlertTriangle, ShieldAlert } from 'lucide-react';
 
 export function QuizAttempt() {
   const { eventId } = useParams();
@@ -23,6 +24,10 @@ export function QuizAttempt() {
   const [pendingCode, setPendingCode] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [codeError, setCodeError] = useState('');
+
+  // Proctoring/Cheating State
+  const [cheatWarning, setCheatWarning] = useState<boolean>(false);
+  const [cheatCount, setCheatCount] = useState<number>(0);
 
   useEffect(() => {
     // Load event + create participant session
@@ -45,6 +50,7 @@ export function QuizAttempt() {
       setLeaderboard(null); // Hide leaderboard when new question starts
       setHiddenOptions([]); // Reset lifelines
       setTimeLeft(question.timerSeconds || 30);
+      setTimerPaused(false);
     });
 
     newSocket.on('lifeline_fifty_result', (hideOpts) => {
@@ -83,7 +89,8 @@ export function QuizAttempt() {
     const handleCopyPaste = (e: Event) => e.preventDefault();
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        alert('Warning: Switching tabs is not allowed during the quiz! This has been logged.');
+        setCheatCount(prev => prev + 1);
+        setCheatWarning(true);
         fetchApi('/questions/cheat', {
           method: 'POST',
           body: JSON.stringify({ eventId })
@@ -356,6 +363,46 @@ export function QuizAttempt() {
                 <span className="font-bold text-primary">{player.points} pts</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Cheat Warning Modal Overlay */}
+      {cheatWarning && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-slate-900 border-2 border-red-500 max-w-md w-full rounded-2xl p-8 text-center shadow-[0_0_50px_rgba(239,68,68,0.3)] transform transition-all duration-300 scale-100 animate-shake">
+            <div className="flex justify-center mb-6">
+              <div className="w-20 h-20 bg-red-500/10 border-2 border-red-500 rounded-full flex items-center justify-center text-red-500 animate-pulse">
+                <ShieldAlert size={40} />
+              </div>
+            </div>
+            
+            <h2 className="text-2xl font-bold font-display text-red-500 mb-3 uppercase tracking-wider">
+              Proctoring Violation
+            </h2>
+            <p className="text-slate-300 text-sm mb-6 leading-relaxed">
+              Switching tabs, opening developer tools, or losing browser window focus is strictly prohibited during this quiz. Your focus changes have been logged.
+            </p>
+            
+            <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-4 mb-6 grid grid-cols-2 gap-4 text-left">
+              <div>
+                <span className="block text-xs font-semibold text-slate-400 uppercase">Violations</span>
+                <span className="text-lg font-bold text-red-400 font-mono">{cheatCount} Detected</span>
+              </div>
+              <div>
+                <span className="block text-xs font-semibold text-slate-400 uppercase">Proctor Status</span>
+                <span className="text-xs font-bold text-red-500 px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 mt-1 inline-block">
+                  FLAGGED
+                </span>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setCheatWarning(false)}
+              className="w-full py-3 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white font-bold rounded-xl text-sm transition-all shadow-md shadow-red-900/30 flex items-center justify-center gap-2"
+            >
+              <AlertTriangle size={16} /> I Understand, Resume Quiz
+            </button>
           </div>
         </div>
       )}

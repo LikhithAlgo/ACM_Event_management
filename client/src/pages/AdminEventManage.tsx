@@ -34,6 +34,9 @@ export function AdminEventManage() {
   const [showParticipants, setShowParticipants] = useState(false);
   const [liveCount, setLiveCount] = useState(0);
   const [newQuestion, setNewQuestion] = useState({ ...BLANK_QUESTION });
+  const [gameState, setGameState] = useState<'waiting' | 'question' | 'revealed'>('waiting');
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(-1);
+  const [autoplayEnabled, setAutoplayEnabled] = useState<boolean>(false);
 
   // Round name modal state
   const [showRoundModal, setShowRoundModal] = useState(false);
@@ -58,6 +61,11 @@ export function AdminEventManage() {
       newSocket.emit('join_admin', eventId);
     });
     newSocket.on('room_count', (count: number) => setLiveCount(count));
+    newSocket.on('game_state_update', (state: { currentState: 'waiting' | 'question' | 'revealed'; currentIndex: number; autoplayEnabled: boolean }) => {
+      setGameState(state.currentState);
+      setCurrentQuestionIndex(state.currentIndex);
+      setAutoplayEnabled(state.autoplayEnabled);
+    });
 
     return () => { newSocket.disconnect(); };
   }, [eventId]);
@@ -236,6 +244,19 @@ export function AdminEventManage() {
     }
   };
 
+  const nextStepLive = () => {
+    if (socket) {
+      socket.emit('admin_next_step', { eventId });
+      toast.success('Advancing to next step!');
+    }
+  };
+
+  const toggleAutoplay = () => {
+    if (socket) {
+      socket.emit('admin_toggle_autoplay', { eventId, enabled: !autoplayEnabled });
+    }
+  };
+
   const handleFileUpload = async (roundId: string, evt: React.ChangeEvent<HTMLInputElement>) => {
     const file = evt.target.files?.[0];
     if (!file) return;
@@ -303,7 +324,7 @@ export function AdminEventManage() {
     }
   };
 
-  const QuestionForm = ({ roundId, questionId }: { roundId: string; questionId?: string }) => (
+  const renderQuestionForm = (roundId: string, questionId?: string) => (
     <form
       onSubmit={(e) => questionId ? handleEditQuestion(e, questionId) : handleCreateQuestion(e, roundId)}
       className="bg-slate-50 rounded-xl p-6 mb-6 border border-borderMuted space-y-4"
@@ -572,6 +593,54 @@ export function AdminEventManage() {
           </div>
         )}
 
+        {/* Game Flow Control Center */}
+        <div className="bg-slate-900 rounded-xl border border-slate-800 p-6 mb-8 text-white flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="flex-1">
+            <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-primary animate-pulse inline-block" /> Live Controller
+            </h2>
+            <div className="flex items-center gap-3">
+              <span className="text-slate-300 text-sm">
+                Status:{" "}
+                <strong className={`font-bold capitalize ${
+                  gameState === 'question' ? 'text-emerald-400' :
+                  gameState === 'revealed' ? 'text-amber-400' : 'text-slate-400'
+                }`}>
+                  {gameState === 'question' ? 'Question Live ⏳' :
+                   gameState === 'revealed' ? 'Answer Revealed 🏆' : 'Waiting 💤'}
+                </strong>
+              </span>
+              {currentQuestionIndex !== -1 && (
+                <span className="bg-slate-800 px-3 py-1 rounded-full text-xs font-semibold text-indigo-200">
+                  Question #{currentQuestionIndex + 1}
+                </span>
+              )}
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            {/* Auto-Play Toggle */}
+            <button 
+              onClick={toggleAutoplay}
+              className={`px-4 py-2 rounded-lg text-xs font-bold border-2 transition-all flex items-center gap-2 select-none
+                ${autoplayEnabled 
+                  ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400 shadow-emerald-900/20 shadow-md' 
+                  : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${autoplayEnabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+              {autoplayEnabled ? 'Auto-Play Active' : 'Enable Auto-Play'}
+            </button>
+
+            {/* Next Step Button */}
+            <button 
+              onClick={nextStepLive}
+              className="px-5 py-2 bg-primary hover:bg-primary-accent text-white rounded-lg text-xs font-bold shadow-soft flex items-center gap-2 transition-transform hover:scale-105 active:scale-95"
+            >
+              {gameState === 'question' ? 'Reveal Answer & Leaderboard →' : 'Push Next Question →'}
+            </button>
+          </div>
+        </div>
+
         {/* Rounds */}
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-slate-900">Rounds</h2>
@@ -601,9 +670,7 @@ export function AdminEventManage() {
               </div>
 
               {/* Question Creation Form */}
-              {showQuestionForm === round.id && (
-                <QuestionForm roundId={round.id} />
-              )}
+              {showQuestionForm === round.id && renderQuestionForm(round.id)}
 
               {round.questions?.length === 0 ? (
                 <p className="text-sm text-slate-500">No questions in this round yet.</p>
@@ -612,7 +679,7 @@ export function AdminEventManage() {
                   {round.questions?.map((q: Question, idx: number) => (
                     <div key={q.id}>
                       {editingQuestion === q.id ? (
-                        <QuestionForm roundId={round.id} questionId={q.id} />
+                        renderQuestionForm(round.id, q.id)
                       ) : (
                         <div className="flex justify-between items-center p-4 bg-slate-50 border border-borderMuted rounded-lg hover:border-slate-300 transition-colors">
                           <div className="flex-1 min-w-0">
