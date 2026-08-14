@@ -6,6 +6,9 @@ export interface User {
   email: string;
   role: 'ADMIN' | 'PARTICIPANT';
   googleId?: string;
+  usn?: string;
+  year?: string;
+  branch?: string;
 }
 
 export interface QuizEvent {

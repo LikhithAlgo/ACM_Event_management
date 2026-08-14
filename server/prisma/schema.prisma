@@ -40,9 +40,12 @@ enum Difficulty {
 model User {
   id           String             @id @default(uuid())
   email        String             @unique
-  name         String
+  name         String             @default("")
   role         Role               @default(PARTICIPANT)
   googleId     String?            @unique
+  usn          String?
+  year         String?
+  branch       String?
   createdAt    DateTime           @default(now())
   submissions  Submission[]
   participants EventParticipant[]

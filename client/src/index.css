@@ -54,4 +54,19 @@
   .animate-fade-in {
     animation: fade-in 0.25s ease-out;
   }
+
+  @keyframes confetti-fall {
+    0% { transform: translateY(-5vh) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(105vh) rotate(360deg); opacity: 0; }
+  }
+
+  .confetti-particle {
+    position: absolute;
+    top: 0;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    animation: confetti-fall 4s linear infinite;
+    z-index: 100;
+  }
 }

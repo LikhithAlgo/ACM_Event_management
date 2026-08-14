@@ -3,8 +3,35 @@ import { useParams } from 'react-router-dom';
 import { fetchApi } from '../lib/api';
 import { io, Socket } from 'socket.io-client';
 import toast from 'react-hot-toast';
+import { redirectToHost } from '../lib/hosts';
 import type { Question, QuizEvent, RevealData, LeaderboardEntry } from '../lib/types';
-import { AlertTriangle, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, ShieldAlert, Trophy, Crown } from 'lucide-react';
+
+function ConfettiShower() {
+  const colors = ['bg-amber-400', 'bg-red-400', 'bg-blue-400', 'bg-emerald-400', 'bg-purple-400', 'bg-pink-400', 'bg-teal-400'];
+  const particles = Array.from({ length: 60 });
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-50">
+      {particles.map((_, i) => {
+        const left = `${Math.random() * 100}%`;
+        const delay = `${Math.random() * 4}s`;
+        const duration = `${3 + Math.random() * 2}s`;
+        const color = colors[i % colors.length];
+        return (
+          <div
+            key={i}
+            className={`confetti-particle ${color}`}
+            style={{
+              left,
+              animationDelay: delay,
+              animationDuration: duration,
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
 
 export function QuizAttempt() {
   const { eventId } = useParams();
@@ -18,6 +45,13 @@ export function QuizAttempt() {
   const [hiddenOptions, setHiddenOptions] = useState<string[]>([]);
   const [usedLifelines, setUsedLifelines] = useState({ fifty: false, flip: false, phone: false });
   const [timerPaused, setTimerPaused] = useState(false);
+  const [isFinished, setIsFinished] = useState(false);
+  const [me, setMe] = useState<any>(null);
+
+  // Profile modal states
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileForm, setProfileForm] = useState({ name: '', usn: '', branch: '', year: '1st Year' });
   
   // Access Code State
   const [verifiedRounds, setVerifiedRounds] = useState<Record<string, boolean>>({});
@@ -33,6 +67,21 @@ export function QuizAttempt() {
     // Load event + create participant session
     fetchApi(`/events/${eventId}`).then(setEvent).catch(console.error);
     fetchApi(`/events/${eventId}/join`, { method: 'POST' }).catch(console.error);
+    fetchApi('/events/me').then((u) => {
+      const didRedirect = redirectToHost(u.role, `/quiz/${eventId}`);
+      if (didRedirect) return;
+      setMe(u);
+
+      if (!u.usn || !u.branch || !u.year || !u.name) {
+        setProfileForm({
+          name: u.name || '',
+          usn: u.usn || '',
+          branch: u.branch || '',
+          year: u.year || '1st Year'
+        });
+        setShowProfileModal(true);
+      }
+    }).catch(console.error);
 
     // Connect to Socket.IO server
     const newSocket = io(import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:3001');
@@ -70,10 +119,34 @@ export function QuizAttempt() {
       setCurrentQuestion(null); // Hide question when leaderboard shows
     });
 
+    newSocket.on('quiz_finished', (finalBoard) => {
+      setLeaderboard(finalBoard);
+      setIsFinished(true);
+      setCurrentQuestion(null);
+    });
+
     return () => {
       newSocket.disconnect();
     };
   }, [eventId]);
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    try {
+      const updated = await fetchApi('/events/me/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileForm)
+      });
+      setMe(updated);
+      setShowProfileModal(false);
+      toast.success('Profile updated successfully!');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save profile');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   // Live Timer countdown
   useEffect(() => {
@@ -178,7 +251,7 @@ export function QuizAttempt() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-4">
-      {!currentQuestion && !leaderboard && (
+      {!currentQuestion && !leaderboard && !isFinished && (
         <div className="text-center animate-pulse">
           <h2 className="text-2xl font-bold mb-2">Waiting for the host...</h2>
           <p className="text-slate-400">The next question will appear here shortly.</p>
@@ -350,7 +423,79 @@ export function QuizAttempt() {
         </div>
       )}
 
-      {leaderboard && (
+      {isFinished && leaderboard && me && (
+        <div className="w-full max-w-2xl text-center space-y-8 animate-fade-in relative z-10 p-4">
+          <ConfettiShower />
+          
+          <div className="bg-slate-800 rounded-3xl p-8 border border-slate-700 shadow-brutal flex flex-col items-center">
+            {/* Crown / Trophy */}
+            <div className="w-24 h-24 bg-amber-500/10 border-2 border-amber-500 rounded-full flex items-center justify-center text-amber-400 mb-6 animate-pulse">
+              <Trophy size={48} />
+            </div>
+
+            <h1 className="text-4xl font-display font-extrabold text-white mb-2">Quiz Finished!</h1>
+            <p className="text-slate-400 text-sm mb-8">
+              The event host has closed the quiz. Here is your final performance:
+            </p>
+
+            {/* Rank and Score display */}
+            <div className="grid grid-cols-2 gap-4 w-full mb-8">
+              <div className="bg-slate-900/60 border border-slate-700/80 rounded-2xl p-6 text-center">
+                <span className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Your Rank</span>
+                <span className="text-4xl font-display font-black text-amber-400 font-mono">
+                  #{leaderboard.findIndex(p => p.name === me.name) + 1 || '-'}
+                </span>
+              </div>
+              
+              <div className="bg-slate-900/60 border border-slate-700/80 rounded-2xl p-6 text-center">
+                <span className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Total Score</span>
+                <span className="text-4xl font-display font-black text-primary font-mono">
+                  {leaderboard.find(p => p.name === me.name)?.points ?? 0} pts
+                </span>
+              </div>
+            </div>
+
+            {/* Top 3 podium inside participant view too! */}
+            <h3 className="text-slate-300 font-bold text-lg mb-6 tracking-wide">🏆 Podium Finishers</h3>
+            
+            <div className="flex items-end justify-center gap-3 h-44 w-full bg-slate-900/40 rounded-2xl p-4 border border-slate-800/80 mb-6">
+              {/* 2nd place */}
+              {leaderboard[1] && (
+                <div className="flex-1 flex flex-col items-center justify-end h-full">
+                  <span className="text-xs font-bold text-slate-300 truncate max-w-[80px]">{leaderboard[1].name}</span>
+                  <span className="text-[10px] text-slate-400 font-mono mb-1">{leaderboard[1].points}</span>
+                  <div className="w-full h-[50%] bg-slate-700/50 border-t-2 border-slate-400 rounded-t flex items-center justify-center font-bold text-slate-300">
+                    2nd
+                  </div>
+                </div>
+              )}
+              {/* 1st place */}
+              {leaderboard[0] && (
+                <div className="flex-1 flex flex-col items-center justify-end h-full">
+                  <Crown size={16} className="text-amber-400 animate-bounce mb-1" />
+                  <span className="text-xs font-extrabold text-amber-200 truncate max-w-[90px]">{leaderboard[0].name}</span>
+                  <span className="text-[10px] text-amber-300 font-mono mb-1">{leaderboard[0].points}</span>
+                  <div className="w-full h-[70%] bg-amber-500/20 border-t-2 border-amber-400 rounded-t flex items-center justify-center font-black text-amber-400">
+                    1st
+                  </div>
+                </div>
+              )}
+              {/* 3rd place */}
+              {leaderboard[2] && (
+                <div className="flex-1 flex flex-col items-center justify-end h-full">
+                  <span className="text-xs font-bold text-amber-100 truncate max-w-[80px]">{leaderboard[2].name}</span>
+                  <span className="text-[10px] text-amber-600/80 font-mono mb-1">{leaderboard[2].points}</span>
+                  <div className="w-full h-[35%] bg-amber-700/20 border-t-2 border-amber-600 rounded-t flex items-center justify-center font-bold text-amber-600">
+                    3rd
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {leaderboard && !isFinished && (
         <div className="w-full max-w-xl bg-slate-800 rounded-2xl p-8 shadow-soft border border-slate-700">
           <h2 className="text-3xl font-display font-bold mb-6 text-warning text-center">Leaderboard</h2>
           <div className="space-y-3">
@@ -403,6 +548,71 @@ export function QuizAttempt() {
             >
               <AlertTriangle size={16} /> I Understand, Resume Quiz
             </button>
+          </div>
+        </div>
+      )}
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100] p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 w-full max-w-md shadow-2xl">
+            <h2 className="text-2xl font-display font-bold text-white mb-2">Complete Your Profile</h2>
+            <p className="text-slate-400 text-sm mb-6">Before you can attempt this quiz, please enter your details so the organizers can record your answers and score.</p>
+            <form onSubmit={handleSaveProfile} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Full Name *</label>
+                <input 
+                  type="text" 
+                  value={profileForm.name} 
+                  onChange={e => setProfileForm({...profileForm, name: e.target.value})} 
+                  required
+                  placeholder="e.g. John Doe"
+                  className="w-full px-4 py-3 bg-slate-850 border border-slate-700 rounded-xl focus:outline-none focus:border-primary transition-colors text-white" 
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">USN *</label>
+                <input 
+                  type="text" 
+                  value={profileForm.usn} 
+                  onChange={e => setProfileForm({...profileForm, usn: e.target.value.toUpperCase()})} 
+                  required
+                  placeholder="e.g. 1RV21CS001"
+                  className="w-full px-4 py-3 bg-slate-850 border border-slate-700 rounded-xl focus:outline-none focus:border-primary transition-colors text-white" 
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Branch *</label>
+                  <input 
+                    type="text" 
+                    value={profileForm.branch} 
+                    onChange={e => setProfileForm({...profileForm, branch: e.target.value})} 
+                    required
+                    placeholder="e.g. CSE"
+                    className="w-full px-4 py-3 bg-slate-850 border border-slate-700 rounded-xl focus:outline-none focus:border-primary transition-colors text-white" 
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Year *</label>
+                  <select 
+                    value={profileForm.year} 
+                    onChange={e => setProfileForm({...profileForm, year: e.target.value})}
+                    className="w-full px-4 py-3 bg-slate-850 border border-slate-700 rounded-xl focus:outline-none focus:border-primary transition-colors text-white bg-slate-900"
+                  >
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                    <option value="3rd Year">3rd Year</option>
+                    <option value="4th Year">4th Year</option>
+                  </select>
+                </div>
+              </div>
+              <button 
+                type="submit" 
+                disabled={savingProfile}
+                className="w-full px-4 py-3 bg-primary text-white font-bold rounded-xl hover:bg-primary-accent transition-colors disabled:opacity-50 mt-2 shadow-soft"
+              >
+                {savingProfile ? 'Saving...' : 'Save & Continue'}
+              </button>
+            </form>
           </div>
         </div>
       )}

@@ -19,7 +19,10 @@ const allowedOrigins = process.env.CORS_ORIGINS
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    if (!origin || 
+        origin.startsWith("http://localhost:") || 
+        origin.startsWith("http://127.0.0.1:") || 
+        allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
@@ -52,6 +55,8 @@ const authenticateUser = async (req: any, res: any, next: any) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
+    const isAdminEmail = user.email! === "yuvarajkhot2005@gmail.com";
+
     // Sync user with our database
     let dbUser = await prisma.user.findUnique({
       where: { email: user.email! }
@@ -59,13 +64,30 @@ const authenticateUser = async (req: any, res: any, next: any) => {
 
     if (!dbUser) {
       const userCount = await prisma.user.count();
-      const role = userCount === 0 ? "ADMIN" : "PARTICIPANT";
+      const role = isAdminEmail ? "ADMIN" : (userCount === 0 ? "ADMIN" : "PARTICIPANT");
       dbUser = await prisma.user.create({
         data: {
           email: user.email!,
           name: user.user_metadata.full_name || user.email!.split("@")[0],
           role: role,
-          googleId: user.id
+          googleId: user.id,
+          usn: user.user_metadata.usn || null,
+          year: user.user_metadata.year || null,
+          branch: user.user_metadata.branch || null
+        }
+      });
+    } else {
+      // Sync info and ensure correct role
+      const newRole = isAdminEmail ? "ADMIN" : dbUser.role;
+      dbUser = await prisma.user.update({
+        where: { email: user.email! },
+        data: {
+          googleId: dbUser.googleId || user.id,
+          name: dbUser.name === dbUser.email.split("@")[0] ? (user.user_metadata.full_name || dbUser.name) : dbUser.name,
+          role: newRole,
+          usn: dbUser.usn || user.user_metadata.usn || null,
+          year: dbUser.year || user.user_metadata.year || null,
+          branch: dbUser.branch || user.user_metadata.branch || null
         }
       });
     }
@@ -78,10 +100,119 @@ const authenticateUser = async (req: any, res: any, next: any) => {
 };
 
 // --- REST Endpoints ---
-
 // Get current user details and sync with database
 app.get("/api/v1/events/me", authenticateUser, async (req: any, res: any) => {
   res.json(req.user);
+});
+
+// Update user details (USN, Year, Branch, Name)
+app.put("/api/v1/events/me/profile", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { name, usn, year, branch } = req.body;
+    if (!name || !usn || !year || !branch) {
+      return res.status(400).json({ error: "All profile fields are required" });
+    }
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        name,
+        usn: usn.trim().toUpperCase(),
+        year,
+        branch: branch.trim()
+      }
+    });
+    res.json(updated);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+// Promote a user to ADMIN (ADMIN only)
+app.post("/api/v1/admin/promote", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const targetEmail = email.trim().toLowerCase();
+
+    // Try to find user in local database
+    let user = await prisma.user.findUnique({
+      where: { email: targetEmail }
+    });
+
+    if (!user) {
+      // Create a placeholder user so when they sign up later, they automatically become an admin
+      user = await prisma.user.create({
+        data: {
+          email: targetEmail,
+          name: targetEmail.split("@")[0],
+          role: "ADMIN"
+        }
+      });
+    } else {
+      // Update role of existing user
+      user = await prisma.user.update({
+        where: { email: targetEmail },
+        data: { role: "ADMIN" }
+      });
+    }
+
+    res.json({ success: true, message: `Successfully promoted ${targetEmail} to Admin!` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Demote an admin to PARTICIPANT (ADMIN only)
+app.post("/api/v1/admin/demote", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const targetEmail = email.trim().toLowerCase();
+
+    // Prevent self-demotion
+    if (targetEmail === req.user.email) {
+      return res.status(400).json({ error: "You cannot demote yourself" });
+    }
+
+    // Try to find user in local database
+    let user = await prisma.user.findUnique({
+      where: { email: targetEmail }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    user = await prisma.user.update({
+      where: { email: targetEmail },
+      data: { role: "PARTICIPANT" }
+    });
+
+    res.json({ success: true, message: `Successfully demoted ${targetEmail} to Participant!` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all users (ADMIN only)
+app.get("/api/v1/admin/users", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const users = await prisma.user.findMany({
+      include: {
+        _count: {
+          select: { submissions: true }
+        }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json(users);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Fetch events list (ADMIN gets all, PARTICIPANT gets only ready/live events)
@@ -135,15 +266,13 @@ app.get("/api/v1/events/global-ranks", authenticateUser, async (req: any, res: a
   try {
     const users = await prisma.user.findMany({
       include: { submissions: true }
-    });
-
-    const ranks = users.map(u => {
+    });    const ranks = users.map(u => {
       const totalPoints = u.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
       return {
         name: u.name,
-        points: totalPoints
+        totalScore: totalPoints
       };
-    }).sort((a, b) => b.points - a.points);
+    }).sort((a, b) => b.totalScore - a.totalScore);
 
     res.json(ranks);
   } catch (error: any) {
@@ -551,7 +680,7 @@ const io = new Server(server, {
 });
 const activeEventTimers: Record<string, NodeJS.Timeout> = {};
 const activeQuestionIndex: Record<string, number> = {};
-const gameState: Record<string, "waiting" | "question" | "revealed"> = {};
+const gameState: Record<string, "waiting" | "question" | "revealed" | "finished"> = {};
 const autoplayMode: Record<string, boolean> = {};
 const autoplayTimers: Record<string, NodeJS.Timeout> = {};
 
@@ -669,16 +798,18 @@ const advanceNextStep = async (eventId: string) => {
       }, durationMs);
     } else {
       // No more questions left!
-      io.to(`event_${eventId}`).emit("quiz_finished");
-      gameState[eventId] = "waiting";
+      const finalLeaderboard = await calculateLeaderboard(eventId);
+      io.to(`event_${eventId}`).emit("quiz_finished", finalLeaderboard);
+      gameState[eventId] = "finished";
       activeQuestionIndex[eventId] = -1; // reset
+      autoplayMode[eventId] = false; // Turn off autoplay on finish
       sendAdminState(eventId);
     }
   }
 };
 
 
-const calculateLeaderboard = async (eventId: string) => {
+async function calculateLeaderboard(eventId: string) {
   const participants = await prisma.eventParticipant.findMany({
     where: { eventId },
     include: {
@@ -699,7 +830,7 @@ const calculateLeaderboard = async (eventId: string) => {
       points
     };
   }).sort((a, b) => b.points - a.points);
-};
+}
 
 const sendRoomCount = (eventId: string) => {
   const room = io.sockets.adapter.rooms.get(`event_${eventId}`);
@@ -868,5 +999,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

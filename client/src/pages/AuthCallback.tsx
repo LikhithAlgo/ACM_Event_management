@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { fetchApi } from '../lib/api';
+import { redirectToHost } from '../lib/hosts';
 
 export function AuthCallback() {
   const navigate = useNavigate();
@@ -19,6 +20,8 @@ export function AuthCallback() {
       try {
         // Check the user's role from our backend
         const user = await fetchApi('/events/me');
+        const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+        if (didRedirect) return;
         if (user.role === 'ADMIN') {
           navigate('/admin');
         } else {
@@ -37,6 +40,8 @@ export function AuthCallback() {
         if (event === 'SIGNED_IN' && session) {
           try {
             const user = await fetchApi('/events/me');
+            const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+            if (didRedirect) return;
             if (user.role === 'ADMIN') {
               navigate('/admin');
             } else {

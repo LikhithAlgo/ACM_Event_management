@@ -6,6 +6,7 @@ import { LogOut, Play, Trophy, Clock, ChevronRight } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { fetchApi } from '../lib/api';
 import type { QuizEvent } from '../lib/types';
+import { redirectToHost } from '../lib/hosts';
 
 interface HistoryEntry {
   eventId: string;
@@ -24,10 +25,16 @@ interface GlobalRankEntry {
 export function ParticipantDashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
+  const [dbUser, setDbUser] = useState<any>(null);
   const [events, setEvents] = useState<QuizEvent[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [globalRanks, setGlobalRanks] = useState<GlobalRankEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  
+  // Profile modal states
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileForm, setProfileForm] = useState({ name: '', usn: '', branch: '', year: '1st Year' });
 
   async function loadEvents() {
     try {
@@ -56,15 +63,51 @@ export function ParticipantDashboard() {
       if (!user) { navigate('/'); return; }
       setUser(user);
       try {
-        const dbUser = await fetchApi('/events/me');
-        if (dbUser.role === 'ADMIN') { navigate('/admin'); return; }
-      // eslint-disable-next-line no-empty
-      } catch {}
-      loadEvents();
-      loadHistory();
+        const profile = await fetchApi('/events/me');
+        const didRedirect = redirectToHost(profile.role, '/dashboard');
+        if (didRedirect) return;
+        if (profile.role === 'ADMIN') { navigate('/admin'); return; }
+        setDbUser(profile);
+        
+        // Show profile modal if details are missing
+        if (!profile.usn || !profile.branch || !profile.year || !profile.name) {
+          setProfileForm({
+            name: profile.name || '',
+            usn: profile.usn || '',
+            branch: profile.branch || '',
+            year: profile.year || '1st Year'
+          });
+          setShowProfileModal(true);
+        }
+        
+        loadEvents();
+        loadHistory();
+      } catch {
+        navigate('/');
+      }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    try {
+      const updated = await fetchApi('/events/me/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileForm)
+      });
+      setDbUser(updated);
+      setShowProfileModal(false);
+      toast.success('Profile updated successfully!');
+      loadEvents();
+      loadHistory();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save profile');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -198,6 +241,72 @@ export function ParticipantDashboard() {
         </div>
 
       </main>
+
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-[0_4px_30px_rgba(0,0,0,0.15)] border border-borderMuted p-8 w-full max-w-md">
+            <h2 className="text-2xl font-display font-bold text-slate-900 mb-2">Complete Your Profile</h2>
+            <p className="text-slate-500 text-sm mb-6">Before you can participate in any quiz events, please provide your details so the organizers can track your score.</p>
+            <form onSubmit={handleSaveProfile} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Full Name *</label>
+                <input 
+                  type="text" 
+                  value={profileForm.name} 
+                  onChange={e => setProfileForm({...profileForm, name: e.target.value})} 
+                  required
+                  placeholder="e.g. John Doe"
+                  className="w-full px-4 py-3 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors" 
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">USN *</label>
+                <input 
+                  type="text" 
+                  value={profileForm.usn} 
+                  onChange={e => setProfileForm({...profileForm, usn: e.target.value.toUpperCase()})} 
+                  required
+                  placeholder="e.g. 1RV21CS001"
+                  className="w-full px-4 py-3 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors" 
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Branch *</label>
+                  <input 
+                    type="text" 
+                    value={profileForm.branch} 
+                    onChange={e => setProfileForm({...profileForm, branch: e.target.value})} 
+                    required
+                    placeholder="e.g. CSE"
+                    className="w-full px-4 py-3 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors" 
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Year *</label>
+                  <select 
+                    value={profileForm.year} 
+                    onChange={e => setProfileForm({...profileForm, year: e.target.value})}
+                    className="w-full px-4 py-3 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors bg-white"
+                  >
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                    <option value="3rd Year">3rd Year</option>
+                    <option value="4th Year">4th Year</option>
+                  </select>
+                </div>
+              </div>
+              <button 
+                type="submit" 
+                disabled={savingProfile}
+                className="w-full px-4 py-3 bg-primary text-white font-bold rounded-xl hover:bg-primary-accent transition-colors disabled:opacity-50 mt-2 shadow-soft"
+              >
+                {savingProfile ? 'Saving...' : 'Save & Continue'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

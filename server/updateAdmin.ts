@@ -10,23 +10,31 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  // Update BOTH possible email spellings to ADMIN
-  const emails = ['trishalhedge@gmail.com', 'trishalhegde@gmail.com'];
+  const admins = [
+    { email: 'trishalhedge@gmail.com', name: 'Trishal Hegde' },
+    { email: 'trishalhegde@gmail.com', name: 'Trishal Hegde' },
+    { email: 'yuvarajkhot2005@gmail.com', name: 'Yuvaraj Khot' }
+  ];
   
-  for (const email of emails) {
-    const user = await prisma.user.findUnique({ where: { email } });
+  for (const admin of admins) {
+    const user = await prisma.user.findUnique({ where: { email: admin.email } });
     if (user) {
       await prisma.user.update({
-        where: { email },
+        where: { email: admin.email },
         data: { role: 'ADMIN' }
       });
-      console.log(`Updated ${email} to ADMIN`);
+      console.log(`Updated ${admin.email} to ADMIN`);
     } else {
-      console.log(`User ${email} not found, creating as ADMIN...`);
+      console.log(`User ${admin.email} not found, creating as ADMIN...`);
       await prisma.user.create({
-        data: { email, name: 'Trishal Hegde', googleId: `manual_${email}`, role: 'ADMIN' }
+        data: { 
+          email: admin.email, 
+          name: admin.name, 
+          googleId: `manual_${admin.email}`, 
+          role: 'ADMIN' 
+        }
       });
-      console.log(`Created ${email} as ADMIN`);
+      console.log(`Created ${admin.email} as ADMIN`);
     }
   }
 }

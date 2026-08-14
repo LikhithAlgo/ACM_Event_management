@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import { ArrowLeft, Plus, Play, Download, Eye, Users, AlertTriangle, X, Copy, QrCode, Edit2, Trash2, Copy as CopyIcon } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
+import { redirectToHost } from '../lib/hosts';
 
 const BLANK_QUESTION = {
   text: '', optA: '', optB: '', optC: '', optD: '',
@@ -47,9 +48,17 @@ export function AdminEventManage() {
   const [duplicating, setDuplicating] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) navigate('/');
-      else loadEvent();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) { navigate('/'); return; }
+      try {
+        const dbUser = await fetchApi('/events/me');
+        const didRedirect = redirectToHost(dbUser.role, `/admin/event/${eventId}`);
+        if (didRedirect) return;
+        if (dbUser.role !== 'ADMIN') { navigate('/dashboard'); return; }
+        loadEvent();
+      } catch {
+        navigate('/');
+      }
     });
 
     const newSocket = io(import.meta.env.VITE_API_URL?.replace('/api/v1', '') || 'http://localhost:3001');
