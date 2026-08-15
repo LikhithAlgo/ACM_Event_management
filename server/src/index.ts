@@ -237,7 +237,7 @@ app.get("/api/v1/events/me/history", authenticateUser, async (req: any, res: any
     });
 
     const eventPoints: Record<string, { eventName: string, totalPoints: number, submittedAt: Date }> = {};
-    submissions.forEach(s => {
+    submissions.forEach((s: any) => {
       if (!eventPoints[s.eventId]) {
         eventPoints[s.eventId] = {
           eventName: s.event.name,
@@ -248,7 +248,7 @@ app.get("/api/v1/events/me/history", authenticateUser, async (req: any, res: any
       eventPoints[s.eventId].totalPoints += s.pointsAwarded;
     });
 
-    const history = Object.entries(eventPoints).map(([eventId, data]) => ({
+    const history = Object.entries(eventPoints).map(([eventId, data]: [string, any]) => ({
       eventId,
       eventName: data.eventName,
       totalPoints: data.totalPoints,
@@ -266,13 +266,13 @@ app.get("/api/v1/events/global-ranks", authenticateUser, async (req: any, res: a
   try {
     const users = await prisma.user.findMany({
       include: { submissions: true }
-    });    const ranks = users.map(u => {
-      const totalPoints = u.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
+    });    const ranks = users.map((u: any) => {
+      const totalPoints = u.submissions.reduce((sum: number, s: any) => sum + s.pointsAwarded, 0);
       return {
         name: u.name,
         totalScore: totalPoints
       };
-    }).sort((a, b) => b.totalScore - a.totalScore);
+    }).sort((a: any, b: any) => b.totalScore - a.totalScore);
 
     res.json(ranks);
   } catch (error: any) {
@@ -483,7 +483,7 @@ const handleRoundStatusChange = async (eventId: string, roundId: string, status:
 app.post("/api/v1/events/:id/rounds", authenticateUser, async (req: any, res: any) => {
   try {
     if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
-    const { name, description, roundOrder, accessCode, shuffleQuestions, shuffleOptions, type, durationMinutes, marksPerCorrect, randomizeQuestions, randomizeOptions } = req.body;
+    const { name, description, roundOrder, accessCode, shuffleQuestions, shuffleOptions, type, durationMinutes, marksPerCorrect, randomizeQuestions, randomizeOptions, deliveryMode } = req.body;
 
     const newRound = await prisma.round.create({
       data: {
@@ -491,6 +491,7 @@ app.post("/api/v1/events/:id/rounds", authenticateUser, async (req: any, res: an
         name,
         description,
         type: type || "MCQ",
+        deliveryMode: deliveryMode === "LIVE_CONTROLLED" ? "LIVE_CONTROLLED" : "SELF_PACED",
         roundOrder: parseInt(roundOrder) || 1,
         accessCode: accessCode || null,
         shuffleQuestions: !!shuffleQuestions,
@@ -721,15 +722,16 @@ app.post("/api/v1/events/:id/duplicate", authenticateUser, async (req: any, res:
         lifelinePhone: eventToDup.lifelinePhone,
         createdBy: req.user.id,
         rounds: {
-          create: eventToDup.rounds.map(r => ({
+          create: eventToDup.rounds.map((r: any) => ({
             name: r.name,
             description: r.description,
             roundOrder: r.roundOrder,
             accessCode: r.accessCode,
+            deliveryMode: r.deliveryMode,
             shuffleQuestions: r.shuffleQuestions,
             shuffleOptions: r.shuffleOptions,
             questions: {
-              create: r.questions.map(q => ({
+              create: r.questions.map((q: any) => ({
                 text: q.text,
                 mediaType: q.mediaType,
                 mediaUrl: q.mediaUrl,
@@ -774,9 +776,9 @@ app.get("/api/v1/events/:id/participants", authenticateUser, async (req: any, re
       }
     });
 
-    const data = participants.map(p => {
-      const submissionPoints = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
-      const mcqPoints = (p.user.roundAttempts || []).reduce((sum, a) => sum + (a.score || 0), 0);
+    const data = participants.map((p: any) => {
+      const submissionPoints = p.user.submissions.reduce((sum: number, s: any) => sum + s.pointsAwarded, 0);
+      const mcqPoints = (p.user.roundAttempts || []).reduce((sum: number, a: any) => sum + (a.score || 0), 0);
       const totalPoints = submissionPoints + mcqPoints;
       const totalSubmissions = p.user.submissions.length + (p.user.roundAttempts || []).length;
 
@@ -1002,7 +1004,7 @@ app.post("/api/v1/events/rounds/:roundId/attempt/submit", authenticateUser, asyn
 
     const marksPerCorrect = round.marksPerCorrect || 1;
 
-    round.questions.forEach((q) => {
+    round.questions.forEach((q: any) => {
       const selectedOption = finalAnswers[q.id];
       if (selectedOption && q.correctAnswer && selectedOption === q.correctAnswer) {
         correctCount++;
@@ -1082,7 +1084,7 @@ app.post("/api/v1/events/rounds/:roundId/force-submit-all", authenticateUser, as
       let wrongCount = 0;
       let unansweredCount = 0;
 
-      round.questions.forEach((q) => {
+      round.questions.forEach((q: any) => {
         const selectedOption = finalAnswers[q.id];
         if (selectedOption && q.correctAnswer && selectedOption === q.correctAnswer) {
           correctCount++;
@@ -1158,7 +1160,7 @@ app.get("/api/v1/events/rounds/:roundId/admin/participant-answers/:userId", auth
     const userAnswers = (attempt?.answers as Record<string, string>) || {};
     const marksPerCorrect = round.marksPerCorrect || 1;
 
-    const details = round.questions.map((q) => {
+    const details = round.questions.map((q: any) => {
       const selectedOption = userAnswers[q.id] || null;
       let result: "CORRECT" | "WRONG" | "UNANSWERED" = "UNANSWERED";
       let marksAwarded = 0;
@@ -1381,15 +1383,15 @@ async function calculateLeaderboard(eventId: string) {
     }
   });
 
-  return participants.map(p => {
-    const submissionPoints = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
-    const mcqPoints = (p.user.roundAttempts || []).reduce((sum, a) => sum + (a.score || 0), 0);
+  return participants.map((p: any) => {
+    const submissionPoints = p.user.submissions.reduce((sum: number, s: any) => sum + s.pointsAwarded, 0);
+    const mcqPoints = (p.user.roundAttempts || []).reduce((sum: number, a: any) => sum + (a.score || 0), 0);
     const points = submissionPoints + mcqPoints;
     return {
       name: p.user.name,
       points
     };
-  }).sort((a, b) => b.points - a.points);
+  }).sort((a: any, b: any) => b.points - a.points);
 }
 
 const sendRoomCount = (eventId: string) => {
@@ -1459,7 +1461,7 @@ io.on("connection", (socket) => {
       questions.push(...r.questions);
     });
 
-    const index = questions.findIndex(q => q.id === questionId);
+    const index = questions.findIndex((q: any) => q.id === questionId);
     if (index !== -1) {
       activeQuestionIndex[eventId] = index;
       gameState[eventId] = "question";
@@ -1575,7 +1577,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnecting", () => {
-    socket.rooms.forEach(room => {
+    socket.rooms.forEach((room: string) => {
       if (room.startsWith("event_") && !room.endsWith("_admin")) {
         const eventId = room.replace("event_", "");
         // Use a setImmediate to allow room size to update before recalculating count

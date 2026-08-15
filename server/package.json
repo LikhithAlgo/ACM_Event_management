@@ -6,6 +6,7 @@
   "scripts": {
     "predev": "npx kill-port 3001",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
+    "postinstall": "prisma generate",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

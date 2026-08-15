@@ -50,6 +50,11 @@ enum AttemptStatus {
   FORCE_SUBMITTED
 }
 
+enum RoundDeliveryMode {
+  SELF_PACED
+  LIVE_CONTROLLED
+}
+
 model User {
   id           String             @id @default(uuid())
   email        String             @unique
@@ -111,8 +116,9 @@ model Round {
   marksPerCorrect    Int            @default(1)
   randomizeQuestions Boolean        @default(false)
   randomizeOptions   Boolean        @default(false)
-  resultsReleased    Boolean        @default(false)
-  status             RoundStatus    @default(WAITING)
+  resultsReleased    Boolean           @default(false)
+  deliveryMode       RoundDeliveryMode @default(SELF_PACED)
+  status             RoundStatus       @default(WAITING)
   countdownEndTime   DateTime?
   roundEndTime       DateTime?
   event              QuizEvent      @relation(fields: [eventId], references: [id], onDelete: Cascade)
