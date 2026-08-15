@@ -33,13 +33,23 @@ app.use(cors({
 
 app.use(express.json());
 
+if (!process.env.SUPABASE_URL) {
+  throw new Error("Missing SUPABASE_URL in server/.env — copy .env.example and fill in values.");
+}
+if (!process.env.SUPABASE_ANON_KEY) {
+  throw new Error("Missing SUPABASE_ANON_KEY in server/.env — copy .env.example and fill in values.");
+}
+if (!process.env.DATABASE_URL) {
+  throw new Error("Missing DATABASE_URL in server/.env — copy .env.example and fill in values.");
+}
+
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
-
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Authentication Middleware using Supabase JWT verification
 const authenticateUser = async (req: any, res: any, next: any) => {
