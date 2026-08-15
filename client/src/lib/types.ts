@@ -35,11 +35,47 @@ export interface Round {
   eventId: string;
   name: string;
   description?: string;
+  type?: 'MCQ' | 'STANDARD';
   roundOrder: number;
   accessCode?: string;
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
+  durationMinutes?: number;
+  marksPerCorrect?: number;
+  randomizeQuestions?: boolean;
+  randomizeOptions?: boolean;
+  resultsReleased?: boolean;
+  status?: 'WAITING' | 'COUNTDOWN' | 'LIVE' | 'ENDED';
+  countdownEndTime?: string;
+  roundEndTime?: string;
   questions?: Question[];
+}
+
+export interface RoundAttempt {
+  id: string;
+  roundId: string;
+  userId: string;
+  eventId: string;
+  status: 'IN_PROGRESS' | 'SUBMITTED' | 'FORCE_SUBMITTED';
+  startedAt: string;
+  submittedAt?: string;
+  score: number;
+  correctCount: number;
+  wrongCount: number;
+  unansweredCount: number;
+  answers: Record<string, string>;
+  markedForReview: string[];
+  user?: User;
+}
+
+export interface ParticipantAnswerDetail {
+  questionId: string;
+  questionText: string;
+  options: Option[];
+  selectedAnswer: string | null;
+  correctAnswer: string;
+  result: 'CORRECT' | 'WRONG' | 'UNANSWERED';
+  marksAwarded: number;
 }
 
 export interface Option {

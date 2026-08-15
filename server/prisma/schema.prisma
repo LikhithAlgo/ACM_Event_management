@@ -24,6 +24,13 @@ enum EventStatus {
   ARCHIVED
 }
 
+enum RoundStatus {
+  WAITING
+  COUNTDOWN
+  LIVE
+  ENDED
+}
+
 enum MediaType {
   NONE
   IMAGE
@@ -35,6 +42,12 @@ enum Difficulty {
   EASY
   MEDIUM
   HARD
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  FORCE_SUBMITTED
 }
 
 model User {
@@ -49,6 +62,7 @@ model User {
   createdAt    DateTime           @default(now())
   submissions  Submission[]
   participants EventParticipant[]
+  roundAttempts RoundAttempt[]
 }
 
 model QuizEvent {
@@ -84,17 +98,47 @@ model EventParticipant {
 }
 
 model Round {
-  id               String       @id @default(uuid())
-  eventId          String
-  name             String
-  description      String?
-  roundOrder       Int
-  accessCode       String?
-  shuffleQuestions Boolean      @default(false)
-  shuffleOptions   Boolean      @default(false)
-  event            QuizEvent    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  questions        Question[]
-  submissions      Submission[]
+  id                 String         @id @default(uuid())
+  eventId            String
+  name               String
+  description        String?
+  type               String         @default("MCQ")
+  roundOrder         Int
+  accessCode         String?
+  shuffleQuestions   Boolean        @default(false)
+  shuffleOptions     Boolean        @default(false)
+  durationMinutes    Int            @default(20)
+  marksPerCorrect    Int            @default(1)
+  randomizeQuestions Boolean        @default(false)
+  randomizeOptions   Boolean        @default(false)
+  resultsReleased    Boolean        @default(false)
+  status             RoundStatus    @default(WAITING)
+  countdownEndTime   DateTime?
+  roundEndTime       DateTime?
+  event              QuizEvent      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  questions          Question[]
+  submissions        Submission[]
+  roundAttempts      RoundAttempt[]
+}
+
+model RoundAttempt {
+  id              String        @id @default(uuid())
+  roundId         String
+  userId          String
+  eventId         String
+  status          AttemptStatus @default(IN_PROGRESS)
+  startedAt       DateTime      @default(now())
+  submittedAt     DateTime?
+  score           Int           @default(0)
+  correctCount    Int           @default(0)
+  wrongCount      Int           @default(0)
+  unansweredCount Int           @default(0)
+  answers         Json          @default("{}")
+  markedForReview Json          @default("[]")
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  round           Round         @relation(fields: [roundId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, userId])
 }
 
 model Question {

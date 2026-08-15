@@ -1,4 +1,3 @@
-const USER_URL = import.meta.env.VITE_USER_URL || 'http://localhost:5173';
 const ADMIN_URL = import.meta.env.VITE_ADMIN_URL || 'http://localhost:5174';
 
 export function getAppMode(): 'ADMIN' | 'USER' {
@@ -10,6 +9,6 @@ export function getAppMode(): 'ADMIN' | 'USER' {
   return 'USER';
 }
 
-export function redirectToHost(role: 'ADMIN' | 'PARTICIPANT', targetPath: string = ''): boolean {
+export function redirectToHost(_role: 'ADMIN' | 'PARTICIPANT', _targetPath: string = ''): boolean {
   return false;
 }

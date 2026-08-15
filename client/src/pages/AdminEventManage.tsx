@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { fetchApi } from '../lib/api';
 import type { QuizEvent, Round, Question, ParticipantEntry } from '../lib/types';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Plus, Play, Download, Eye, Users, AlertTriangle, X, Copy, QrCode, Edit2, Trash2, Copy as CopyIcon } from 'lucide-react';
+import { ArrowLeft, Plus, Play, Download, Eye, Users, AlertTriangle, X, Copy, QrCode, Edit2, Trash2, Copy as CopyIcon, Clock } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { QRCodeSVG } from 'qrcode.react';
 import { redirectToHost } from '../lib/hosts';
@@ -41,11 +41,29 @@ export function AdminEventManage() {
 
   // Round name modal state
   const [showRoundModal, setShowRoundModal] = useState(false);
-  const [roundName, setRoundName] = useState('');
   const [creatingRound, setCreatingRound] = useState(false);
+
+  const [roundForm, setRoundForm] = useState({
+    name: '',
+    description: '',
+    durationMinutes: 20,
+    marksPerCorrect: 1,
+    randomizeQuestions: false,
+    randomizeOptions: false
+  });
+  const [showAnswerReviewModal, setShowAnswerReviewModal] = useState(false);
+  const [selectedReviewData, setSelectedReviewData] = useState<any>(null);
 
   // Event duplication state
   const [duplicating, setDuplicating] = useState(false);
+
+  const [countdownDurations, setCountdownDurations] = useState<Record<string, number>>({});
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -76,6 +94,31 @@ export function AdminEventManage() {
       setAutoplayEnabled(state.autoplayEnabled);
     });
 
+    newSocket.on('round_status_update', (data: any) => {
+      setEvent(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          rounds: prev.rounds?.map(r => r.id === data.roundId ? { ...r, status: data.status, countdownEndTime: data.countdownEndTime, roundEndTime: data.roundEndTime } : r)
+        };
+      });
+    });
+
+    newSocket.on('initial_round_state', (data: any) => {
+      if (data?.rounds) {
+        setEvent(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rounds: prev.rounds?.map(r => {
+              const updated = data.rounds.find((ur: any) => ur.id === r.id);
+              return updated ? { ...r, status: updated.status, countdownEndTime: updated.countdownEndTime, roundEndTime: updated.roundEndTime } : r;
+            })
+          };
+        });
+      }
+    });
+
     return () => { newSocket.disconnect(); };
   }, [eventId]);
 
@@ -83,7 +126,80 @@ export function AdminEventManage() {
     try {
       const data = await fetchApi(`/events/${eventId}`);
       setEvent(data);
-    } catch { toast.error('Failed to load event'); }
+    } catch (e: any) {
+      toast.error(e.message || 'Event not found or has been deleted');
+      navigate('/admin');
+    }
+  };
+
+  const handleUpdateRoundStatus = async (roundId: string, status: string, durationSeconds?: number) => {
+    try {
+      if (socket) {
+        socket.emit('admin_update_round_status', { eventId, roundId, status, durationSeconds });
+      }
+
+      if (status === 'COUNTDOWN' || status === 'countdown') {
+        await fetchApi(`/rounds/${roundId}/start-countdown`, {
+          method: 'POST',
+          body: JSON.stringify({ durationSeconds })
+        });
+      } else if (status === 'LIVE' || status === 'active') {
+        await fetchApi(`/rounds/${roundId}/start-now`, {
+          method: 'POST'
+        });
+      } else {
+        await fetchApi(`/events/${eventId}/rounds/${roundId}/round-status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status, durationSeconds })
+        });
+      }
+
+      toast.success(`Round status updated to ${status}`);
+      loadEvent();
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update round status');
+    }
+  };
+
+  const handleForceSubmitAll = async (roundId: string) => {
+    if (!window.confirm('Are you sure you want to force-submit all active participants?')) return;
+    try {
+      await fetchApi(`/events/rounds/${roundId}/force-submit-all`, { method: 'POST' });
+      toast.success('All active participant attempts force-submitted!');
+      loadEvent();
+    } catch (e: any) { toast.error(e.message); }
+  };
+
+  const handleToggleReleaseResults = async (roundId: string, currentVal: boolean) => {
+    try {
+      await fetchApi(`/events/rounds/${roundId}/release-results`, {
+        method: 'PATCH',
+        body: JSON.stringify({ resultsReleased: !currentVal })
+      });
+      toast.success(!currentVal ? 'Results released to participants!' : 'Results hidden');
+      loadEvent();
+    } catch (e: any) { toast.error(e.message); }
+  };
+
+  const handleInspectParticipantAnswers = async (roundId: string, userId: string) => {
+    const toastId = toast.loading('Loading participant answers...');
+    try {
+      const data = await fetchApi(`/events/rounds/${roundId}/admin/participant-answers/${userId}`);
+      setSelectedReviewData(data);
+      setShowAnswerReviewModal(true);
+      toast.dismiss(toastId);
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to load answers', { id: toastId });
+    }
+  };
+
+  const getRemainingCountdownText = (endTimeStr?: string) => {
+    if (!endTimeStr) return '00:00';
+    const endMs = new Date(endTimeStr).getTime();
+    const diffSec = Math.max(0, Math.floor((endMs - Date.now()) / 1000));
+    const mins = Math.floor(diffSec / 60);
+    const secs = diffSec % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
   const loadParticipants = async () => {
@@ -109,16 +225,25 @@ export function AdminEventManage() {
 
   const handleCreateRound = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!roundName.trim()) return;
+    if (!roundForm.name.trim()) return;
     setCreatingRound(true);
     try {
       await fetchApi(`/events/${eventId}/rounds`, {
         method: 'POST',
-        body: JSON.stringify({ name: roundName.trim(), roundOrder: ((event as any)?.rounds?.length || 0) + 1 })
+        body: JSON.stringify({
+          name: roundForm.name.trim(),
+          description: roundForm.description.trim() || null,
+          type: 'MCQ',
+          roundOrder: ((event as any)?.rounds?.length || 0) + 1,
+          durationMinutes: Number(roundForm.durationMinutes) || 20,
+          marksPerCorrect: Number(roundForm.marksPerCorrect) || 1,
+          randomizeQuestions: roundForm.randomizeQuestions,
+          randomizeOptions: roundForm.randomizeOptions
+        })
       });
-      toast.success(`Round "${roundName}" created!`);
+      toast.success(`Round "${roundForm.name}" created!`);
       setShowRoundModal(false);
-      setRoundName('');
+      setRoundForm({ name: '', description: '', durationMinutes: 20, marksPerCorrect: 1, randomizeQuestions: false, randomizeOptions: false });
       loadEvent();
     } catch (e: any) { toast.error(e.message); }
     finally { setCreatingRound(false); }
@@ -547,19 +672,158 @@ export function AdminEventManage() {
                   <label className="block text-sm font-medium text-slate-700 mb-1">Round Name *</label>
                   <input
                     type="text"
-                    value={roundName}
-                    onChange={e => setRoundName(e.target.value)}
+                    value={roundForm.name}
+                    onChange={e => setRoundForm({ ...roundForm, name: e.target.value })}
                     autoFocus
                     required
                     className="w-full px-4 py-3 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors"
-                    placeholder="e.g. Round 1 – Prelims"
+                    placeholder="e.g. Round 1 – MCQ"
                   />
                 </div>
-                <button type="submit" disabled={creatingRound || !roundName.trim()}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Description / Instructions</label>
+                  <textarea
+                    rows={2}
+                    value={roundForm.description}
+                    onChange={e => setRoundForm({ ...roundForm, description: e.target.value })}
+                    className="w-full px-4 py-2 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary transition-colors text-sm"
+                    placeholder="e.g. Answer all questions within the round timer."
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Total Round Duration (min)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="300"
+                      value={roundForm.durationMinutes}
+                      onChange={e => setRoundForm({ ...roundForm, durationMinutes: parseInt(e.target.value) || 20 })}
+                      className="w-full px-4 py-2 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary text-sm font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Marks Per Correct Answer</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={roundForm.marksPerCorrect}
+                      onChange={e => setRoundForm({ ...roundForm, marksPerCorrect: parseInt(e.target.value) || 1 })}
+                      className="w-full px-4 py-2 border-2 border-borderMuted rounded-xl focus:outline-none focus:border-primary text-sm font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-borderMuted">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={roundForm.randomizeQuestions}
+                      onChange={e => setRoundForm({ ...roundForm, randomizeQuestions: e.target.checked })}
+                      className="rounded border-slate-300 text-primary focus:ring-primary"
+                    />
+                    Randomize Question Order
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={roundForm.randomizeOptions}
+                      onChange={e => setRoundForm({ ...roundForm, randomizeOptions: e.target.checked })}
+                      className="rounded border-slate-300 text-primary focus:ring-primary"
+                    />
+                    Randomize Option Order
+                  </label>
+                </div>
+
+                <p className="text-xs text-slate-400 italic">Note: Negative marking is disabled by design (Correct = +marks, Wrong = 0, Unanswered = 0).</p>
+
+                <button type="submit" disabled={creatingRound || !roundForm.name.trim()}
                   className="w-full px-4 py-3 bg-primary text-white font-bold rounded-xl hover:bg-primary-accent transition-colors disabled:opacity-50">
-                  {creatingRound ? 'Creating...' : 'Create Round'}
+                  {creatingRound ? 'Creating...' : 'Create MCQ Round'}
                 </button>
               </form>
+            </div>
+          </div>
+        )}
+
+        {/* Participant Answer Review Modal */}
+        {showAnswerReviewModal && selectedReviewData && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowAnswerReviewModal(false)}>
+            <div className="bg-slate-900 text-white rounded-2xl shadow-2xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto border border-slate-800" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center pb-4 border-b border-slate-800 mb-6">
+                <div>
+                  <h2 className="text-2xl font-bold">Participant Answer Review</h2>
+                  <p className="text-slate-400 text-sm">
+                    {selectedReviewData.user?.name || 'Participant'} ({selectedReviewData.user?.usn || selectedReviewData.user?.email || 'N/A'})
+                  </p>
+                </div>
+                <button onClick={() => setShowAnswerReviewModal(false)} className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800">
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* Score Summary Box */}
+              <div className="grid grid-cols-4 gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800 mb-6 text-center">
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Score</span>
+                  <span className="text-2xl font-black text-amber-400 font-mono">
+                    {selectedReviewData.attempt?.score ?? 0} pts
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Correct</span>
+                  <span className="text-2xl font-black text-emerald-400 font-mono">
+                    {selectedReviewData.attempt?.correctCount ?? 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Wrong</span>
+                  <span className="text-2xl font-black text-red-400 font-mono">
+                    {selectedReviewData.attempt?.wrongCount ?? 0}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Unanswered</span>
+                  <span className="text-2xl font-black text-slate-400 font-mono">
+                    {selectedReviewData.attempt?.unansweredCount ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Questions List */}
+              <div className="space-y-4">
+                {selectedReviewData.details?.map((item: any, idx: number) => (
+                  <div key={item.questionId} className="bg-slate-800/80 rounded-xl p-4 border border-slate-700/80 space-y-2">
+                    <div className="flex justify-between items-start gap-3">
+                      <h4 className="font-bold text-white text-sm">
+                        Q{idx + 1}. {item.questionText}
+                      </h4>
+                      <span className={`px-2.5 py-0.5 text-[10px] font-extrabold rounded-full uppercase tracking-wider ${
+                        item.result === 'CORRECT' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                        item.result === 'WRONG' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                        'bg-slate-700 text-slate-300 border border-slate-600'
+                      }`}>
+                        {item.result} ({item.marksAwarded > 0 ? `+${item.marksAwarded}` : '0'} pts)
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 text-xs">
+                      <div className={`p-2.5 rounded-lg border ${
+                        item.selectedAnswer ? (item.result === 'CORRECT' ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-200' : 'bg-red-950/40 border-red-700/60 text-red-200') : 'bg-slate-900/60 border-slate-700 text-slate-400'
+                      }`}>
+                        <span className="font-bold block text-[10px] uppercase tracking-wider text-slate-400 mb-0.5">Participant Answer:</span>
+                        {item.selectedAnswer ? `${item.selectedAnswer}. ${(item.options?.find((o: any) => o.id === item.selectedAnswer)?.text || item.selectedAnswer)}` : 'Unanswered'}
+                      </div>
+
+                      <div className="p-2.5 rounded-lg border bg-emerald-950/40 border-emerald-700/60 text-emerald-200">
+                        <span className="font-bold block text-[10px] uppercase tracking-wider text-emerald-400 mb-0.5">Correct Answer:</span>
+                        {item.correctAnswer}. {(item.options?.find((o: any) => o.id === item.correctAnswer)?.text || item.correctAnswer)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -579,6 +843,7 @@ export function AdminEventManage() {
                   <thead><tr className="text-left text-slate-500 border-b border-borderMuted">
                     <th className="pb-2">Name</th><th className="pb-2">Email</th><th className="pb-2">Joined</th>
                     <th className="pb-2">Submissions</th><th className="pb-2">Score</th><th className="pb-2">Tab Switches</th>
+                    <th className="pb-2">Actions</th>
                   </tr></thead>
                   <tbody>
                     {participants.map((p) => (
@@ -592,6 +857,14 @@ export function AdminEventManage() {
                           <span className={`flex items-center gap-1 ${p.tabSwitches > 3 ? 'text-error font-bold' : 'text-slate-500'}`}>
                             {p.tabSwitches > 3 && <AlertTriangle size={14} />} {p.tabSwitches}
                           </span>
+                        </td>
+                        <td className="py-3">
+                          <button
+                            onClick={() => handleInspectParticipantAnswers((event.rounds?.[0]?.id || ''), p.id)}
+                            className="px-3 py-1 bg-primary/10 border border-primary/30 text-primary text-xs font-bold rounded-lg hover:bg-primary hover:text-white transition-all flex items-center gap-1"
+                          >
+                            <Eye size={12} /> View Answers
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -675,6 +948,122 @@ export function AdminEventManage() {
                     className="text-sm font-medium text-primary hover:underline flex items-center gap-1">
                     <Plus size={16} /> Add Question
                   </button>
+                </div>
+              </div>
+
+              {/* Round Control & Countdown Box */}
+              <div className="bg-slate-900 text-white rounded-xl p-5 mb-6 border border-slate-800 shadow-soft">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Round Status</span>
+                      <span className={`px-2.5 py-0.5 text-xs font-bold rounded-full ${
+                        round.status === 'LIVE' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                        round.status === 'COUNTDOWN' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse' :
+                        round.status === 'ENDED' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                        'bg-slate-800 text-slate-300 border border-slate-700'
+                      }`}>
+                        {round.status || 'WAITING'}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-300 font-medium">
+                      Control participant countdown & round status for {round.name}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3 flex-wrap">
+                    {(!round.status || round.status === 'WAITING') && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center bg-slate-800 rounded-lg p-1 border border-slate-700">
+                          <span className="text-xs font-bold text-slate-400 px-2">Countdown:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="120"
+                            value={countdownDurations[round.id] ?? 10}
+                            onChange={(e) => setCountdownDurations(prev => ({ ...prev, [round.id]: Math.max(1, parseInt(e.target.value) || 1) }))}
+                            className="w-14 px-2 py-1 bg-slate-900 text-white text-xs font-bold text-center rounded border border-slate-700 focus:outline-none"
+                          />
+                          <span className="text-xs font-medium text-slate-400 px-1">min</span>
+                        </div>
+
+                        <button
+                          onClick={() => handleUpdateRoundStatus(round.id, 'COUNTDOWN', (countdownDurations[round.id] ?? 10) * 60)}
+                          className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs transition-transform hover:scale-105 flex items-center gap-1.5 shadow-soft"
+                        >
+                          <Clock size={14} /> Start Countdown
+                        </button>
+
+                        <button
+                          onClick={() => handleUpdateRoundStatus(round.id, 'LIVE')}
+                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-transform hover:scale-105 shadow-soft"
+                        >
+                          Start Round Now
+                        </button>
+                      </div>
+                    )}
+
+                    {round.status === 'COUNTDOWN' && (
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-lg">
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                          <span className="text-xs font-bold text-amber-400">Countdown Active:</span>
+                          <span className="font-mono font-bold text-sm text-white">
+                            {getRemainingCountdownText(round.countdownEndTime)}
+                          </span>
+                        </div>
+
+                        <button
+                          onClick={() => handleUpdateRoundStatus(round.id, 'LIVE')}
+                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-transform hover:scale-105 shadow-soft"
+                        >
+                          End Countdown & Start Round
+                        </button>
+                      </div>
+                    )}
+
+                    {round.status === 'LIVE' && (
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/30">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Round is LIVE
+                        </span>
+                        <button
+                          onClick={() => handleForceSubmitAll(round.id)}
+                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg text-xs transition-all shadow-soft"
+                        >
+                          Force Submit All
+                        </button>
+                        <button
+                          onClick={() => handleUpdateRoundStatus(round.id, 'ENDED')}
+                          className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xs transition-all shadow-soft"
+                        >
+                          End Round
+                        </button>
+                      </div>
+                    )}
+
+                    {round.status === 'ENDED' && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleUpdateRoundStatus(round.id, 'WAITING')}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg text-xs border border-slate-700 transition-all"
+                        >
+                          Reset to Waiting
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => handleToggleReleaseResults(round.id, !!round.resultsReleased)}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${
+                        round.resultsReleased
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30'
+                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-500'
+                      }`}
+                    >
+                      {round.resultsReleased ? '✓ Results Released' : 'Release Results'}
+                    </button>
+                  </div>
                 </div>
               </div>
 

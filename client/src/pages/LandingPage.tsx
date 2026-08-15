@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { fetchApi } from '../lib/api';
-import { ShieldCheck, Trophy, Sparkles, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, Trophy, Zap, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { redirectToHost } from '../lib/hosts';
 
@@ -27,9 +27,9 @@ export function LandingPage() {
       if (session) {
         try {
           const user = await fetchApi('/events/me');
-          const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+          const didRedirect = redirectToHost(user.role, '/dashboard');
           if (didRedirect) return;
-          navigate(user.role === 'ADMIN' ? '/admin' : '/dashboard');
+          navigate('/dashboard');
         } catch {
           // If profile lookup fails, sign out to clear any stale/invalid local session
           await supabase.auth.signOut();
@@ -41,9 +41,9 @@ export function LandingPage() {
   const redirectByRole = async () => {
     try {
       const user = await fetchApi('/events/me');
-      const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+      const didRedirect = redirectToHost(user.role, '/dashboard');
       if (didRedirect) return;
-      navigate(user.role === 'ADMIN' ? '/admin' : '/dashboard');
+      navigate('/dashboard');
     } catch {
       toast.error('Failed to load user profile. Please try again.');
     }
@@ -121,16 +121,16 @@ export function LandingPage() {
           <div className="w-10 h-10 bg-primary/20 border border-primary/40 rounded-xl flex items-center justify-center text-primary font-bold text-xl">
             A
           </div>
-          <span className="text-2xl font-display font-extrabold text-white tracking-tight">ACMQuiz</span>
+          <span className="text-2xl font-display font-extrabold text-white tracking-tight">ACM Event Platform</span>
         </div>
 
         {/* Hero Pitch */}
         <div className="z-10 my-12 md:my-0">
           <h1 className="text-4xl md:text-5xl font-display font-black text-white leading-tight mb-6">
-            The Ultimate Real-time Quiz Platform
+            The Ultimate Real-time Event Platform
           </h1>
           <p className="text-slate-400 leading-relaxed mb-8 text-base">
-            Participate in chapter events, attempt live proctored quizzes, and view real-time dynamic leaderboards. Simple for participants, powerful for admins.
+            Built by ACM (<strong className="font-semibold text-slate-300">Association for Computing Machinery</strong>), NMAMIT — conduct MCQ rounds, coding rounds, and live proctored competitions with real-time leaderboards. Simple for participants, powerful for admins.
           </p>
 
           {/* Features bullet list */}
@@ -140,18 +140,18 @@ export function LandingPage() {
                 <Trophy size={16} />
               </div>
               <div>
-                <h4 className="font-bold text-slate-200 text-sm">WebSocket Speed</h4>
-                <p className="text-slate-400 text-xs mt-0.5">Live multiplayer score calculations and projector dashboards.</p>
+                <h4 className="font-bold text-slate-200 text-sm">Multi-Round Competitions</h4>
+                <p className="text-slate-400 text-xs mt-0.5">Run MCQ, coding, and custom rounds back-to-back within a single event, each with its own timer and rules.</p>
               </div>
             </div>
 
             <div className="flex gap-4 items-start">
               <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
-                <Sparkles size={16} />
+                <Zap size={16} />
               </div>
               <div>
-                <h4 className="font-bold text-slate-200 text-sm">KBC Lifelines & FFF</h4>
-                <p className="text-slate-400 text-xs mt-0.5">Built-in Kaun Banega Crorepati TV-show style support.</p>
+                <h4 className="font-bold text-slate-200 text-sm">Real-Time Sync</h4>
+                <p className="text-slate-400 text-xs mt-0.5">Countdowns, questions, and results update instantly for every participant — no refreshing, no delays.</p>
               </div>
             </div>
 
@@ -160,8 +160,8 @@ export function LandingPage() {
                 <ShieldCheck size={16} />
               </div>
               <div>
-                <h4 className="font-bold text-slate-200 text-sm">Smart Proctoring</h4>
-                <p className="text-slate-400 text-xs mt-0.5">Anti-cheat warnings and logs whenever a participant changes tabs.</p>
+                <h4 className="font-bold text-slate-200 text-sm">Tab-Switch Monitoring</h4>
+                <p className="text-slate-400 text-xs mt-0.5">Automatic detection and logging when a participant switches tabs or minimizes the browser during a round.</p>
               </div>
             </div>
           </div>
@@ -169,7 +169,7 @@ export function LandingPage() {
 
         {/* Footer info */}
         <div className="z-10 text-xs text-slate-500 mt-6 md:mt-0">
-          © 2025 ACMQuiz Chapter. Self-hosted and secure.
+          © 2025 ACM NMAMIT — <strong className="font-semibold text-slate-300">Association for Computing Machinery</strong>. Self-hosted and secure.
         </div>
       </div>
 
@@ -326,20 +326,6 @@ export function LandingPage() {
               {loading ? 'Please wait...' : (authMode === 'login' ? 'Sign In' : 'Register Profile')}
             </button>
           </form>
-
-          {/* Quick link switcher for local testing */}
-          <div className="mt-8 text-center bg-slate-900/50 p-4 border border-slate-800 rounded-xl">
-            <p className="text-slate-400 text-xs font-semibold mb-2">Quick Portal Access</p>
-            <div className="flex justify-center gap-4 text-xs font-bold">
-              <a href="http://localhost:5173" className="text-blue-400 hover:underline">
-                Participant Portal (5173)
-              </a>
-              <span className="text-slate-600">|</span>
-              <a href="http://localhost:5174" className="text-amber-400 hover:underline">
-                Admin Portal (5174)
-              </a>
-            </div>
-          </div>
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import { redirectToHost } from '../lib/hosts';
 import type { Question, QuizEvent, RevealData, LeaderboardEntry } from '../lib/types';
-import { AlertTriangle, ShieldAlert, Trophy, Crown } from 'lucide-react';
+import { AlertTriangle, ShieldAlert, Trophy, Crown, Clock, Bookmark, ChevronLeft, ChevronRight, CheckCircle2, Send } from 'lucide-react';
 
 function ConfettiShower() {
   const colors = ['bg-amber-400', 'bg-red-400', 'bg-blue-400', 'bg-emerald-400', 'bg-purple-400', 'bg-pink-400', 'bg-teal-400'];
@@ -48,6 +48,53 @@ export function QuizAttempt() {
   const [isFinished, setIsFinished] = useState(false);
   const [me, setMe] = useState<any>(null);
 
+  // Round & Countdown state
+  const [roundStatus, setRoundStatus] = useState<'waiting' | 'countdown' | 'active' | 'ended'>('waiting');
+  const [activeRoundState, setActiveRoundState] = useState<{
+    status: 'WAITING' | 'COUNTDOWN' | 'LIVE' | 'ENDED';
+    countdownEndTime?: string;
+    roundName?: string;
+    roundDescription?: string;
+    durationSeconds?: number;
+  }>({ status: 'WAITING' });
+  const [onlineCount, setOnlineCount] = useState<number>(0);
+  const [, setTick] = useState<number>(0);
+
+  // MCQ Round State
+  const [activeRoundId, setActiveRoundId] = useState<string>('');
+  const [mcqQuestions, setMcqQuestions] = useState<Question[]>([]);
+  const [currentMcqIndex, setCurrentMcqIndex] = useState<number>(0);
+  const [mcqAnswers, setMcqAnswers] = useState<Record<string, string>>({});
+  const [markedForReview, setMarkedForReview] = useState<string[]>([]);
+  const [mcqAttemptStatus, setMcqAttemptStatus] = useState<'IN_PROGRESS' | 'SUBMITTED' | 'FORCE_SUBMITTED'>('IN_PROGRESS');
+  const [mcqScore, setMcqScore] = useState<number>(0);
+  const [mcqTotalTimer, setMcqTotalTimer] = useState<number>(0);
+  const [mcqSubmitting, setMcqSubmitting] = useState<boolean>(false);
+  const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState<boolean>(false);
+  const [resultsReleased, setResultsReleased] = useState<boolean>(false);
+
+  // Ticker for live countdown display
+  useEffect(() => {
+    const timer = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Total MCQ Round Timer Countdown
+  useEffect(() => {
+    if (activeRoundState.status !== 'LIVE' || mcqAttemptStatus !== 'IN_PROGRESS' || mcqTotalTimer <= 0) return;
+    const interval = setInterval(() => {
+      setMcqTotalTimer(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          handleMcqSubmitAttempt(true);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeRoundState.status, mcqAttemptStatus, mcqTotalTimer > 0]);
+
   // Profile modal states
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -62,6 +109,84 @@ export function QuizAttempt() {
   // Proctoring/Cheating State
   const [cheatWarning, setCheatWarning] = useState<boolean>(false);
   const [cheatCount, setCheatCount] = useState<number>(0);
+
+  const loadMcqAttempt = async (roundId: string) => {
+    try {
+      setActiveRoundId(roundId);
+      const data = await fetchApi(`/events/rounds/${roundId}/attempt`);
+      if (data.round) {
+        setMcqQuestions(data.round.questions || []);
+        setResultsReleased(!!data.round.resultsReleased);
+      }
+      if (data.attempt) {
+        setMcqAnswers(data.attempt.answers || {});
+        setMarkedForReview(data.attempt.markedForReview || []);
+        setMcqAttemptStatus(data.attempt.status || 'IN_PROGRESS');
+        setMcqScore(data.attempt.score || 0);
+      }
+      if (data.remainingRoundSeconds !== undefined) {
+        setMcqTotalTimer(data.remainingRoundSeconds);
+      }
+    } catch (e) {
+      console.error('Failed to load MCQ attempt:', e);
+    }
+  };
+
+  const saveMcqAttempt = async (newAnswers: Record<string, string>, newMarked: string[]) => {
+    if (!activeRoundId || mcqAttemptStatus !== 'IN_PROGRESS') return;
+    try {
+      await fetchApi(`/events/rounds/${activeRoundId}/attempt/save`, {
+        method: 'POST',
+        body: JSON.stringify({ answers: newAnswers, markedForReview: newMarked })
+      });
+    } catch (e) {
+      console.error('Failed to auto-save attempt:', e);
+    }
+  };
+
+  const handleSelectOption = (questionId: string, optionId: string) => {
+    if (mcqAttemptStatus !== 'IN_PROGRESS') return;
+    const updated = { ...mcqAnswers, [questionId]: optionId };
+    setMcqAnswers(updated);
+    saveMcqAttempt(updated, markedForReview);
+  };
+
+  const handleClearAnswer = (questionId: string) => {
+    if (mcqAttemptStatus !== 'IN_PROGRESS') return;
+    const updated = { ...mcqAnswers };
+    delete updated[questionId];
+    setMcqAnswers(updated);
+    saveMcqAttempt(updated, markedForReview);
+  };
+
+  const handleToggleMarkForReview = (questionId: string) => {
+    if (mcqAttemptStatus !== 'IN_PROGRESS') return;
+    const updatedMarked = markedForReview.includes(questionId)
+      ? markedForReview.filter(id => id !== questionId)
+      : [...markedForReview, questionId];
+    setMarkedForReview(updatedMarked);
+    saveMcqAttempt(mcqAnswers, updatedMarked);
+  };
+
+  const handleMcqSubmitAttempt = async (auto = false) => {
+    if (!activeRoundId || mcqAttemptStatus !== 'IN_PROGRESS') return;
+    setMcqSubmitting(true);
+    const toastId = toast.loading(auto ? "Time's up! Submitting answers..." : "Submitting round attempt...");
+    try {
+      const res = await fetchApi(`/events/rounds/${activeRoundId}/attempt/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ answers: mcqAnswers })
+      });
+      setMcqAttemptStatus('SUBMITTED');
+      if (res.attempt) setMcqScore(res.attempt.score || 0);
+      toast.success(auto ? "Time's up! Your answers have been submitted." : "Your answers have been submitted successfully!", { id: toastId });
+      setShowSubmitConfirmModal(false);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to submit attempt", { id: toastId });
+    } finally {
+      setMcqSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     // Load event + create participant session
@@ -92,6 +217,78 @@ export function QuizAttempt() {
       newSocket.emit('join_event', eventId);
     });
 
+    newSocket.on('room_count', (count: number) => setOnlineCount(count));
+
+    const handleStatusEvent = (data: any) => {
+      if (!data) return;
+      const rawStat = (data.rawStatus || data.status || 'WAITING').toUpperCase();
+      const normStatus: 'waiting' | 'countdown' | 'active' | 'ended' =
+        rawStat === 'COUNTDOWN' ? 'countdown' :
+        (rawStat === 'LIVE' || rawStat === 'ACTIVE' ? 'active' :
+        (rawStat === 'ENDED' ? 'ended' : 'waiting'));
+
+      setRoundStatus(normStatus);
+      setActiveRoundState(prev => ({
+        ...prev,
+        status: (rawStat === 'ACTIVE' ? 'LIVE' : rawStat) as any,
+        countdownEndTime: data.startsAt || data.countdownEndTime || prev.countdownEndTime,
+        durationSeconds: data.durationSeconds || prev.durationSeconds,
+        roundName: data.round?.name || prev.roundName,
+        roundDescription: data.round?.description || prev.roundDescription
+      }));
+
+      const targetRoundId = data.roundId || data.round?.id || activeRoundId;
+      if (targetRoundId) {
+        newSocket.emit('join_round', targetRoundId);
+      }
+      if ((normStatus === 'active' || rawStat === 'LIVE') && targetRoundId) {
+        loadMcqAttempt(targetRoundId);
+      }
+    };
+
+    newSocket.on('round_status_update', handleStatusEvent);
+    newSocket.on('round:status', handleStatusEvent);
+
+    newSocket.on('initial_round_state', (data: any) => {
+      if (data?.rounds && data.rounds.length > 0) {
+        const firstRound = data.rounds[0];
+        const rawStat = (firstRound.status || 'WAITING').toUpperCase();
+        const normStatus: 'waiting' | 'countdown' | 'active' | 'ended' =
+          rawStat === 'COUNTDOWN' ? 'countdown' :
+          (rawStat === 'LIVE' || rawStat === 'ACTIVE' ? 'active' :
+          (rawStat === 'ENDED' ? 'ended' : 'waiting'));
+
+        setRoundStatus(normStatus);
+        setActiveRoundState({
+          status: (rawStat === 'ACTIVE' ? 'LIVE' : rawStat) as any,
+          countdownEndTime: firstRound.countdownEndTime,
+          roundName: firstRound.name,
+          roundDescription: firstRound.description
+        });
+
+        if (firstRound.id) {
+          newSocket.emit('join_round', firstRound.id);
+          // Fetch current REST status on mount / reconnect before socket events arrive
+          fetchApi(`/rounds/${firstRound.id}`).then(handleStatusEvent).catch(() => {
+            fetchApi(`/events/rounds/${firstRound.id}/status-details`).then(handleStatusEvent).catch(console.error);
+          });
+
+          if (normStatus === 'active' || rawStat === 'LIVE') {
+            loadMcqAttempt(firstRound.id);
+          }
+        }
+      }
+    });
+
+    newSocket.on('round_force_submitted', () => {
+      setMcqAttemptStatus('FORCE_SUBMITTED');
+      toast.error('The round has been ended by the administrator. Your answers have been submitted.');
+    });
+
+    newSocket.on('results_released_update', (data: any) => {
+      setResultsReleased(!!data?.resultsReleased);
+    });
+
     newSocket.on('new_question', (question) => {
       setCurrentQuestion(question);
       setSelectedAnswer(null);
@@ -100,6 +297,7 @@ export function QuizAttempt() {
       setHiddenOptions([]); // Reset lifelines
       setTimeLeft(question.timerSeconds || 30);
       setTimerPaused(false);
+      setActiveRoundState(prev => ({ ...prev, status: 'LIVE' }));
     });
 
     newSocket.on('lifeline_fifty_result', (hideOpts) => {
@@ -162,6 +360,8 @@ export function QuizAttempt() {
     const handleCopyPaste = (e: Event) => e.preventDefault();
     const handleVisibilityChange = () => {
       if (document.hidden) {
+        // Keep tab switch tracking disabled while round is waiting or countdown
+        if (roundStatus !== 'active' && activeRoundState.status !== 'LIVE') return;
         setCheatCount(prev => prev + 1);
         setCheatWarning(true);
         fetchApi('/questions/cheat', {
@@ -182,10 +382,10 @@ export function QuizAttempt() {
       document.removeEventListener('paste', handleCopyPaste);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [eventId]);
+  }, [eventId, roundStatus, activeRoundState.status]);
 
   const handleSubmit = async (answerId: string) => {
-    if (selectedAnswer) return; // Prevent double submit
+    if (selectedAnswer || !currentQuestion) return; // Prevent double submit
     setSelectedAnswer(answerId);
 
     try {
@@ -244,17 +444,402 @@ export function QuizAttempt() {
     }
   };
 
+  const getCountdownRemainingSeconds = () => {
+    if (!activeRoundState.countdownEndTime) return 0;
+    const endMs = new Date(activeRoundState.countdownEndTime).getTime();
+    return Math.max(0, Math.floor((endMs - Date.now()) / 1000));
+  };
+
+  const remainingSeconds = getCountdownRemainingSeconds();
+  const countdownMinutes = Math.floor(remainingSeconds / 60);
+  const countdownSecs = remainingSeconds % 60;
+  const formattedCountdown = `${String(countdownMinutes).padStart(2, '0')}:${String(countdownSecs).padStart(2, '0')}`;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const currentRound = (event?.rounds as any[])?.find((r: any) => r.id === currentQuestion?.roundId);
   const requiresCode = currentRound?.accessCode === 'REQUIRED';
   const isRoundVerified = !requiresCode || verifiedRounds[currentQuestion?.roundId || ''];
 
+  // Single source of truth for mutually exclusive views
+  const effectiveStatus: 'submitted' | 'active' | 'countdown' | 'waiting' =
+    (mcqAttemptStatus === 'SUBMITTED' || mcqAttemptStatus === 'FORCE_SUBMITTED') ? 'submitted' :
+    (activeRoundState.status === 'LIVE' || roundStatus === 'active') ? 'active' :
+    (activeRoundState.status === 'COUNTDOWN' || roundStatus === 'countdown') ? 'countdown' :
+    'waiting';
+
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-4">
-      {!currentQuestion && !leaderboard && !isFinished && (
-        <div className="text-center animate-pulse">
-          <h2 className="text-2xl font-bold mb-2">Waiting for the host...</h2>
-          <p className="text-slate-400">The next question will appear here shortly.</p>
+
+      {/* 1. SUBMITTED VIEW */}
+      {effectiveStatus === 'submitted' && (
+        <div className="w-full max-w-xl bg-slate-800/90 border border-slate-700/80 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fade-in relative z-10">
+          <div className="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-500 rounded-full flex items-center justify-center text-emerald-400 mx-auto animate-pulse">
+            <CheckCircle2 size={36} />
+          </div>
+          <h2 className="text-3xl font-display font-extrabold text-white">Submission Recorded</h2>
+          <p className="text-slate-300 text-sm">
+            Your answers have been saved and submitted successfully.
+          </p>
+
+          {resultsReleased ? (
+            <div className="bg-slate-900/80 border border-slate-700 rounded-2xl p-6 space-y-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest block">Your Total Score</span>
+              <span className="text-4xl font-display font-black text-amber-400 font-mono block">{mcqScore} pts</span>
+            </div>
+          ) : (
+            <div className="bg-slate-900/60 border border-slate-700/60 rounded-2xl p-4 text-xs text-slate-400">
+              Results will be announced shortly by the administrator.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 2. ACTIVE MCQ VIEW */}
+      {effectiveStatus === 'active' && !currentQuestion && (
+        <div className="w-full max-w-5xl space-y-6 animate-fade-in relative z-10 p-2 md:p-4">
+          {/* Top Bar: Header, Total Timer, Submit Button */}
+          <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-4 shadow-xl flex flex-col md:flex-row justify-between items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-primary/20 border border-primary/40 rounded-xl flex items-center justify-center text-primary font-bold">
+                A
+              </div>
+              <div>
+                <h1 className="text-lg font-display font-bold text-white tracking-tight">{event?.name || 'ACM Event'}</h1>
+                <span className="text-xs font-semibold text-primary uppercase tracking-wider">{activeRoundState.roundName || 'Round 1 — MCQ'}</span>
+              </div>
+            </div>
+
+            {/* ONE Total MCQ Round Timer */}
+            <div className="flex items-center gap-2 bg-slate-900/90 border border-slate-700 px-5 py-2 rounded-xl shadow-inner">
+              <Clock size={18} className={mcqTotalTimer <= 180 ? 'text-red-400 animate-pulse' : 'text-amber-400'} />
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Time Remaining:</span>
+              <span className={`text-2xl font-display font-black font-mono tracking-wider ${mcqTotalTimer <= 180 ? 'text-red-400 animate-pulse' : 'text-amber-400'}`}>
+                {`${String(Math.floor(mcqTotalTimer / 60)).padStart(2, '0')}:${String(mcqTotalTimer % 60).padStart(2, '0')}`}
+              </span>
+            </div>
+
+            {/* Submit Button */}
+            {mcqAttemptStatus === 'IN_PROGRESS' && (
+              <button
+                onClick={() => setShowSubmitConfirmModal(true)}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-sm transition-transform hover:scale-105 shadow-soft flex items-center gap-2"
+              >
+                <Send size={16} /> Submit Round
+              </button>
+            )}
+          </div>
+
+          {/* MCQ Question Area & Palette */}
+          {mcqQuestions.length === 0 ? (
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-3xl p-8 shadow-2xl text-center text-slate-400">
+              No questions found for this MCQ round.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              {/* Question Card (3 Cols) */}
+              <div className="lg:col-span-3 bg-slate-800/90 border border-slate-700/80 rounded-3xl p-6 shadow-xl flex flex-col justify-between min-h-[450px]">
+                {(() => {
+                  const currentQ = mcqQuestions[currentMcqIndex];
+                  if (!currentQ) return null;
+                  const selectedOpt = mcqAnswers[currentQ.id];
+                  const isMarked = markedForReview.includes(currentQ.id);
+
+                  return (
+                    <div className="space-y-6">
+                      {/* Question Header */}
+                      <div className="flex justify-between items-center border-b border-slate-700/80 pb-3">
+                        <span className="text-xs font-extrabold uppercase tracking-widest text-slate-400">
+                          Question {currentMcqIndex + 1} of {mcqQuestions.length}
+                        </span>
+                        {isMarked && (
+                          <span className="px-3 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold rounded-full flex items-center gap-1">
+                            <Bookmark size={12} /> Marked for Review
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Question Text & Media */}
+                      <div className="space-y-4">
+                        <h3 className="text-xl font-bold text-white leading-relaxed">
+                          {currentQ.text}
+                        </h3>
+
+                        {currentQ.mediaType === 'IMAGE' && currentQ.mediaUrl && (
+                          <img src={currentQ.mediaUrl} alt="Question Media" className="max-h-60 rounded-xl object-contain border border-slate-700" />
+                        )}
+                        {currentQ.mediaType === 'AUDIO' && currentQ.mediaUrl && (
+                          <audio controls src={currentQ.mediaUrl} className="w-full" />
+                        )}
+                        {currentQ.mediaType === 'VIDEO' && currentQ.mediaUrl && (
+                          <video controls src={currentQ.mediaUrl} className="w-full max-h-60 rounded-xl" />
+                        )}
+                      </div>
+
+                      {/* Option List */}
+                      <div className="space-y-3 pt-2">
+                        {currentQ.options?.map((opt) => {
+                          const isSelected = selectedOpt === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              onClick={() => handleSelectOption(currentQ.id, opt.id)}
+                              className={`w-full p-4 rounded-2xl text-left font-medium transition-all flex items-center justify-between group ${
+                                isSelected
+                                  ? 'bg-primary/20 border-2 border-primary text-white shadow-soft'
+                                  : 'bg-slate-900/70 border border-slate-700/80 text-slate-200 hover:border-slate-500 hover:bg-slate-900'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className={`w-8 h-8 rounded-xl font-mono text-xs font-bold flex items-center justify-center ${
+                                  isSelected ? 'bg-primary text-white' : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                }`}>
+                                  {opt.id}
+                                </span>
+                                <span>{opt.text}</span>
+                              </div>
+
+                              {isSelected && (
+                                <span className="px-2.5 py-1 bg-primary text-white text-[10px] font-extrabold uppercase tracking-widest rounded-lg">
+                                  SELECTED
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Question Actions */}
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-700/80">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleClearAnswer(currentQ.id)}
+                            disabled={!selectedOpt}
+                            className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl border border-slate-700 transition-all disabled:opacity-40"
+                          >
+                            Clear Answer
+                          </button>
+                          <button
+                            onClick={() => handleToggleMarkForReview(currentQ.id)}
+                            className={`px-3.5 py-1.5 text-xs font-bold rounded-xl border transition-all flex items-center gap-1.5 ${
+                              isMarked
+                                ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                                : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-500'
+                            }`}
+                          >
+                            <Bookmark size={14} />
+                            {isMarked ? 'Unmark Review' : 'Mark for Review'}
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setCurrentMcqIndex(prev => Math.max(0, prev - 1))}
+                            disabled={currentMcqIndex === 0}
+                            className="px-4 py-2 bg-slate-900 hover:bg-slate-700 text-white font-bold rounded-xl text-xs border border-slate-700 transition-all disabled:opacity-40 flex items-center gap-1"
+                          >
+                            <ChevronLeft size={16} /> Previous
+                          </button>
+                          <button
+                            onClick={() => setCurrentMcqIndex(prev => Math.min(mcqQuestions.length - 1, prev + 1))}
+                            disabled={currentMcqIndex === mcqQuestions.length - 1}
+                            className="px-4 py-2 bg-primary hover:bg-primary-accent text-white font-bold rounded-xl text-xs transition-all disabled:opacity-40 flex items-center gap-1"
+                          >
+                            Next <ChevronRight size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Sidebar: Question Palette (1 Col) */}
+              <div className="bg-slate-800/90 border border-slate-700/80 rounded-3xl p-5 shadow-xl space-y-4">
+                <h4 className="text-sm font-bold text-white uppercase tracking-wider border-b border-slate-700/80 pb-3 flex items-center justify-between">
+                  <span>Questions</span>
+                  <span className="text-xs text-slate-400 font-mono">{mcqQuestions.length} total</span>
+                </h4>
+
+                {/* Legend */}
+                <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-300 pb-2 border-b border-slate-700/80">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400" /> ✓ Answered</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-500" /> — Unanswered</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400" /> 🔖 Review</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary" /> ● Current</span>
+                </div>
+
+                {/* Question Grid Buttons */}
+                <div className="grid grid-cols-5 gap-2 max-h-[320px] overflow-y-auto pr-1">
+                  {mcqQuestions.map((q, idx) => {
+                    const isAnswered = !!mcqAnswers[q.id];
+                    const isMarked = markedForReview.includes(q.id);
+                    const isCurrent = idx === currentMcqIndex;
+
+                    return (
+                      <button
+                        key={q.id}
+                        onClick={() => setCurrentMcqIndex(idx)}
+                        className={`h-10 rounded-xl font-mono text-xs font-bold flex flex-col items-center justify-center transition-all relative ${
+                          isCurrent
+                            ? 'ring-2 ring-primary ring-offset-2 ring-offset-slate-900 bg-primary text-white'
+                            : isAnswered
+                            ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/40'
+                            : isMarked
+                            ? 'bg-amber-500/30 text-amber-300 border border-amber-500/40 hover:bg-amber-500/40'
+                            : 'bg-slate-900 text-slate-400 border border-slate-700 hover:border-slate-500'
+                        }`}
+                      >
+                        <span>{idx + 1}</span>
+                        <span className="text-[9px] leading-none">
+                          {isAnswered ? '✓' : isMarked ? '🔖' : '—'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3. COUNTDOWN VIEW */}
+      {effectiveStatus === 'countdown' && !currentQuestion && (
+        <div className="w-full max-w-xl bg-slate-800/90 border border-slate-700/80 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fade-in relative z-10">
+          <div className="flex items-center justify-between border-b border-slate-700/80 pb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-primary/20 border border-primary/40 rounded-xl flex items-center justify-center text-primary font-bold text-sm">
+                A
+              </div>
+              <span className="text-lg font-display font-bold text-white tracking-tight">{event?.name || 'ACM Event'}</span>
+            </div>
+            {onlineCount > 0 && (
+              <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold rounded-full flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                {onlineCount} Online
+              </span>
+            )}
+          </div>
+          <div>
+            <span className="inline-block px-3 py-1 bg-primary/10 border border-primary/20 text-primary text-xs font-extrabold uppercase tracking-widest rounded-full mb-2">
+              {activeRoundState.roundName || 'Round 1 — MCQ'}
+            </span>
+            <h2 className="text-3xl font-display font-extrabold text-white">
+              {activeRoundState.roundName || 'Round 1 — MCQ'}
+            </h2>
+            {activeRoundState.roundDescription && (
+              <p className="text-slate-400 text-sm mt-2">{activeRoundState.roundDescription}</p>
+            )}
+          </div>
+          <div className="bg-slate-900/80 border border-amber-500/30 rounded-2xl p-6 shadow-inner space-y-4">
+            <span className="text-xs font-bold uppercase tracking-widest text-amber-400 flex items-center justify-center gap-1.5">
+              <Clock size={16} /> Round starts in
+            </span>
+            <div className="text-5xl font-display font-black text-amber-400 font-mono tracking-wider animate-pulse">
+              {formattedCountdown}
+            </div>
+            <p className="text-xs text-slate-400">
+              Please wait for the administrator to start the round.
+            </p>
+            <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden border border-slate-700">
+              <div 
+                className="bg-amber-400 h-full transition-all duration-1000"
+                style={{
+                  width: activeRoundState.durationSeconds 
+                    ? `${Math.min(100, (remainingSeconds / activeRoundState.durationSeconds) * 100)}%` 
+                    : '100%'
+                }}
+              />
+            </div>
+          </div>
+          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 text-left text-xs text-slate-400 space-y-2">
+            <span className="font-bold text-slate-300 block mb-1">📋 Instructions & Rules:</span>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Do not switch tabs or minimize the browser during the quiz.</li>
+              <li>There is ONE total timer for the entire MCQ round.</li>
+              <li>Your selected answers are saved automatically on selection.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* 4. WAITING VIEW */}
+      {effectiveStatus === 'waiting' && !currentQuestion && !leaderboard && !isFinished && (
+        <div className="w-full max-w-xl bg-slate-800/90 border border-slate-700/80 rounded-3xl p-8 shadow-2xl text-center space-y-6 animate-fade-in relative z-10">
+          <div className="flex items-center justify-between border-b border-slate-700/80 pb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-primary/20 border border-primary/40 rounded-xl flex items-center justify-center text-primary font-bold text-sm">
+                A
+              </div>
+              <span className="text-lg font-display font-bold text-white tracking-tight">{event?.name || 'ACM Event'}</span>
+            </div>
+            {onlineCount > 0 && (
+              <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold rounded-full flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                {onlineCount} Online
+              </span>
+            )}
+          </div>
+          <div>
+            <span className="inline-block px-3 py-1 bg-primary/10 border border-primary/20 text-primary text-xs font-extrabold uppercase tracking-widest rounded-full mb-2">
+              {activeRoundState.roundName || 'Round 1 — MCQ'}
+            </span>
+            <h2 className="text-3xl font-display font-extrabold text-white">
+              {activeRoundState.roundName || 'Round 1 — MCQ'}
+            </h2>
+            {activeRoundState.roundDescription && (
+              <p className="text-slate-400 text-sm mt-2">{activeRoundState.roundDescription}</p>
+            )}
+          </div>
+          <div className="bg-slate-900/60 border border-slate-700/60 rounded-2xl p-6 space-y-3">
+            <div className="flex items-center justify-center gap-2 text-amber-400 font-bold text-sm">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+              Status: Waiting for administrator
+            </div>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              The administrator has not started the round yet. You will automatically transition when the countdown or round begins.
+            </p>
+          </div>
+          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 text-left text-xs text-slate-400 space-y-2">
+            <span className="font-bold text-slate-300 block mb-1">📋 Instructions & Rules:</span>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Do not switch tabs or minimize the browser during the quiz.</li>
+              <li>There is ONE total timer for the entire MCQ round.</li>
+              <li>Your selected answers are saved automatically on selection.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* Submit Confirmation Modal */}
+      {showSubmitConfirmModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowSubmitConfirmModal(false)}>
+          <div className="bg-slate-900 text-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-slate-800 space-y-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-xl font-bold">Submit MCQ Round Attempt?</h3>
+            <p className="text-slate-300 text-sm leading-relaxed">
+              Are you sure you want to submit your round attempt? Once submitted, you cannot change your answers.
+            </p>
+            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+              <p className="text-slate-400">Total Questions: <strong className="text-white">{mcqQuestions.length}</strong></p>
+              <p className="text-slate-400">Answered: <strong className="text-emerald-400">{Object.keys(mcqAnswers).length}</strong></p>
+              <p className="text-slate-400">Unanswered: <strong className="text-amber-400">{Math.max(0, mcqQuestions.length - Object.keys(mcqAnswers).length)}</strong></p>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowSubmitConfirmModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl border border-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleMcqSubmitAttempt(false)}
+                disabled={mcqSubmitting}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl disabled:opacity-50"
+              >
+                {mcqSubmitting ? 'Submitting...' : 'Confirm Submit'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

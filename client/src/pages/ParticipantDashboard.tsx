@@ -2,11 +2,11 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Play, Trophy, Clock, ChevronRight } from 'lucide-react';
+import { LogOut, Play, Clock, ChevronRight, Shield } from 'lucide-react';
 import { motion } from 'framer-motion';
+import toast from 'react-hot-toast';
 import { fetchApi } from '../lib/api';
 import type { QuizEvent } from '../lib/types';
-import { redirectToHost } from '../lib/hosts';
 
 interface HistoryEntry {
   eventId: string;
@@ -17,18 +17,12 @@ interface HistoryEntry {
   rank: number | null;
 }
 
-interface GlobalRankEntry {
-  name: string;
-  totalScore: number;
-}
-
 export function ParticipantDashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
   const [dbUser, setDbUser] = useState<any>(null);
   const [events, setEvents] = useState<QuizEvent[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [globalRanks, setGlobalRanks] = useState<GlobalRankEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   
   // Profile modal states
@@ -45,12 +39,8 @@ export function ParticipantDashboard() {
 
   async function loadHistory() {
     try {
-      const [hist, ranks] = await Promise.all([
-        fetchApi('/events/me/history'),
-        fetchApi('/events/global-ranks'),
-      ]);
+      const hist = await fetchApi('/events/me/history');
       setHistory(hist);
-      setGlobalRanks(ranks);
     } catch (e) {
       console.error(e);
     } finally {
@@ -64,9 +54,6 @@ export function ParticipantDashboard() {
       setUser(user);
       try {
         const profile = await fetchApi('/events/me');
-        const didRedirect = redirectToHost(profile.role, '/dashboard');
-        if (didRedirect) return;
-        if (profile.role === 'ADMIN') { navigate('/admin'); return; }
         setDbUser(profile);
         
         // Show profile modal if details are missing
@@ -127,26 +114,41 @@ export function ParticipantDashboard() {
   const liveEvents = events.filter(e => e.status === 'LIVE' || e.status === 'READY');
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="flex items-center justify-between px-8 py-4 bg-white shadow-soft border-b border-borderMuted">
-        <div className="text-xl font-display font-bold text-slate-900">ACMQuiz</div>
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2 text-slate-600">
-            <span className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold">
-              {user?.email?.charAt(0).toUpperCase()}
-            </span>
-            <span className="text-sm font-medium">{user?.user_metadata?.full_name || user?.email}</span>
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      {/* Header */}
+      <header className="bg-white border-b border-borderMuted px-8 py-4 flex justify-between items-center shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-primary/10 text-primary rounded-xl flex items-center justify-center font-bold text-xl">
+            A
           </div>
-          <button onClick={handleLogout} className="text-slate-500 hover:text-error transition-colors" title="Logout">
-            <LogOut size={20} />
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">ACM Quiz Portal</h1>
+            <p className="text-xs text-slate-500">Participant Dashboard</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-6">
+          <div className="text-right">
+            <p className="text-sm font-bold text-slate-900">{user?.user_metadata?.full_name || user?.email?.split('@')[0]}</p>
+            <p className="text-xs text-slate-500">{user?.email}</p>
+          </div>
+          {dbUser?.role === 'ADMIN' && (
+            <button
+              onClick={() => navigate('/admin')}
+              className="bg-primary text-white px-4 py-2 rounded-lg font-medium hover:bg-primary-accent transition-colors text-sm flex items-center gap-2"
+            >
+              <Shield size={16} /> Admin
+            </button>
+          )}
+          <button onClick={handleLogout} className="text-slate-500 hover:text-error transition-colors p-1" title="Logout">
+            <LogOut size={24} />
           </button>
         </div>
       </header>
 
-      <main className="flex-1 p-8 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <main className="flex-1 p-8 max-w-5xl mx-auto w-full space-y-8">
 
-        {/* Left Column: Events */}
-        <div className="lg:col-span-2 space-y-6">
+        {/* Active Events */}
+        <div className="space-y-6">
           <h2 className="text-2xl font-bold text-slate-900 mb-4 flex items-center gap-2">
             <Play className="text-primary" /> Active Events
           </h2>
@@ -209,35 +211,6 @@ export function ParticipantDashboard() {
               ))}
             </div>
           )}
-        </div>
-
-        {/* Right Column: Global Rankings */}
-        <div className="space-y-8">
-          <div className="bg-white border border-borderMuted rounded-xl p-6 shadow-soft">
-            <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <Trophy className="text-warning" size={20} /> Global Rankings
-            </h3>
-            {loadingHistory ? (
-              <div className="text-center text-slate-400 py-4 text-sm">Loading...</div>
-            ) : globalRanks.length === 0 ? (
-              <div className="text-center text-slate-400 py-4 text-sm">No rankings yet.</div>
-            ) : (
-              <div className="space-y-3">
-                {globalRanks.slice(0, 5).map((r, i) => {
-                  const isMe = r.name === (user?.user_metadata?.full_name || user?.email?.split('@')[0]);
-                  return (
-                    <div key={i} className={`flex items-center justify-between p-3 rounded-lg ${isMe ? 'bg-primary/5 border border-primary/20' : 'bg-slate-50'}`}>
-                      <div className="flex items-center gap-3">
-                        <span className={`font-bold ${i === 0 ? 'text-warning' : i === 1 ? 'text-slate-400' : i === 2 ? 'text-amber-600' : 'text-slate-400'}`}>#{i + 1}</span>
-                        <span className={`text-sm ${isMe ? 'font-bold text-primary' : 'text-slate-700'}`}>{isMe ? 'You' : r.name}</span>
-                      </div>
-                      <span className="text-sm font-medium text-slate-600">{r.totalScore} pts</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
 
       </main>

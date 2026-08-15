@@ -4,9 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:user": "vite --port 5173",
+    "predev:admin": "npx kill-port 5174",
     "dev:admin": "vite --port 5174",
+    "predev:user": "npx kill-port 5173",
+    "dev:user": "vite --port 5173",
+    "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

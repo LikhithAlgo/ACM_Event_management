@@ -340,10 +340,52 @@ app.get("/api/v1/events/:id", authenticateUser, async (req: any, res: any) => {
   }
 });
 
+// Delete Event (ADMIN only)
+const deleteEventById = async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const eventId = req.params.id;
+
+    const existingEvent = await prisma.quizEvent.findUnique({
+      where: { id: eventId }
+    });
+
+    if (!existingEvent) {
+      return res.status(404).json({ error: "Event not found" });
+    }
+
+    if (existingEvent.status === "LIVE") {
+      return res.status(400).json({ error: "Cannot delete a LIVE event. Please close the event first." });
+    }
+
+    await prisma.quizEvent.delete({
+      where: { id: eventId }
+    });
+
+    res.json({ success: true, message: `Event "${existingEvent.name}" deleted successfully`, id: eventId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+app.delete("/api/v1/events/:id", authenticateUser, deleteEventById);
+app.delete("/api/events/:id", authenticateUser, deleteEventById);
+
 // Join Event
 app.post("/api/v1/events/:id/join", authenticateUser, async (req: any, res: any) => {
   try {
     const eventId = req.params.id;
+    const userId = req.user.id;
+
+    // Check if participant already joined to ensure idempotency & allow re-joining
+    const existingParticipant = await prisma.eventParticipant.findUnique({
+      where: { eventId_userId: { eventId, userId } }
+    });
+
+    if (existingParticipant) {
+      return res.json(existingParticipant);
+    }
+
     const event = await prisma.quizEvent.findUnique({
       where: { id: eventId },
       include: { participants: true }
@@ -356,8 +398,8 @@ app.post("/api/v1/events/:id/join", authenticateUser, async (req: any, res: any)
     }
 
     const participant = await prisma.eventParticipant.upsert({
-      where: { eventId_userId: { eventId, userId: req.user.id } },
-      create: { eventId, userId: req.user.id },
+      where: { eventId_userId: { eventId, userId } },
+      create: { eventId, userId },
       update: {}
     });
 
@@ -383,24 +425,178 @@ app.patch("/api/v1/events/:id/status", authenticateUser, async (req: any, res: a
   }
 });
 
+const handleRoundStatusChange = async (eventId: string, roundId: string, status: "WAITING" | "COUNTDOWN" | "LIVE" | "ENDED", durationSeconds?: number) => {
+  if (activeRoundTimers[roundId]) {
+    clearTimeout(activeRoundTimers[roundId]);
+    delete activeRoundTimers[roundId];
+  }
+
+  let countdownEndTime: Date | null = null;
+  let roundEndTime: Date | null = null;
+
+  const roundBefore = await prisma.round.findUnique({ where: { id: roundId } });
+
+  if (status === "COUNTDOWN" && durationSeconds && durationSeconds > 0) {
+    countdownEndTime = new Date(Date.now() + durationSeconds * 1000);
+  } else if (status === "LIVE") {
+    const durMins = roundBefore?.durationMinutes || 20;
+    roundEndTime = new Date(Date.now() + durMins * 60 * 1000);
+  }
+
+  const updatedRound = await prisma.round.update({
+    where: { id: roundId },
+    data: {
+      status,
+      countdownEndTime: status === "COUNTDOWN" ? countdownEndTime : null,
+      roundEndTime: status === "LIVE" ? roundEndTime : (status === "ENDED" ? null : roundBefore?.roundEndTime)
+    }
+  });
+
+  const payload = {
+    eventId,
+    roundId,
+    status: status === "LIVE" ? "active" : status.toLowerCase(),
+    rawStatus: status,
+    startsAt: updatedRound.countdownEndTime ? updatedRound.countdownEndTime.toISOString() : null,
+    countdownEndTime: updatedRound.countdownEndTime ? updatedRound.countdownEndTime.toISOString() : null,
+    startedAt: updatedRound.roundEndTime ? updatedRound.roundEndTime.toISOString() : null,
+    roundEndTime: updatedRound.roundEndTime ? updatedRound.roundEndTime.toISOString() : null,
+    durationSeconds: durationSeconds || 0,
+    serverTime: new Date().toISOString(),
+    round: updatedRound
+  };
+
+  io.to(`event_${eventId}`).to(`round_${roundId}`).emit("round_status_update", payload);
+  io.to(`event_${eventId}`).to(`round_${roundId}`).emit("round:status", payload);
+
+  if (status === "COUNTDOWN" && durationSeconds && durationSeconds > 0) {
+    activeRoundTimers[roundId] = setTimeout(async () => {
+      delete activeRoundTimers[roundId];
+      await handleRoundStatusChange(eventId, roundId, "LIVE");
+    }, durationSeconds * 1000);
+  }
+
+  return updatedRound;
+};
+
 // Create Round (ADMIN only)
 app.post("/api/v1/events/:id/rounds", authenticateUser, async (req: any, res: any) => {
   try {
     if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
-    const { name, description, roundOrder, accessCode, shuffleQuestions, shuffleOptions } = req.body;
+    const { name, description, roundOrder, accessCode, shuffleQuestions, shuffleOptions, type, durationMinutes, marksPerCorrect, randomizeQuestions, randomizeOptions } = req.body;
 
     const newRound = await prisma.round.create({
       data: {
         eventId: req.params.id,
         name,
         description,
+        type: type || "MCQ",
         roundOrder: parseInt(roundOrder) || 1,
         accessCode: accessCode || null,
         shuffleQuestions: !!shuffleQuestions,
-        shuffleOptions: !!shuffleOptions
+        shuffleOptions: !!shuffleOptions,
+        durationMinutes: parseInt(durationMinutes) || 20,
+        marksPerCorrect: parseInt(marksPerCorrect) || 1,
+        randomizeQuestions: !!randomizeQuestions,
+        randomizeOptions: !!randomizeOptions
       }
     });
     res.json(newRound);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Round Status / Start Countdown (ADMIN only)
+app.patch(["/api/v1/events/:eventId/rounds/:roundId/round-status", "/api/v1/events/:eventId/rounds/:roundId/status"], authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { status, durationSeconds } = req.body;
+    const { eventId, roundId } = req.params;
+
+    const updatedRound = await handleRoundStatusChange(
+      eventId,
+      roundId,
+      status,
+      durationSeconds ? parseInt(durationSeconds) : undefined
+    );
+    res.json(updatedRound);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/rounds/:id/start-countdown
+app.post(["/api/rounds/:id/start-countdown", "/api/v1/rounds/:id/start-countdown", "/api/v1/events/rounds/:id/start-countdown"], authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const roundId = req.params.id;
+    const { minutes, durationSeconds } = req.body;
+    const durSecs = durationSeconds || (minutes ? minutes * 60 : 600);
+
+    const round = await prisma.round.findUnique({ where: { id: roundId } });
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    const updatedRound = await handleRoundStatusChange(round.eventId, roundId, "COUNTDOWN", durSecs);
+    res.json({
+      status: "countdown",
+      startsAt: updatedRound.countdownEndTime,
+      round: updatedRound
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/rounds/:id/start-now
+app.post(["/api/rounds/:id/start-now", "/api/v1/rounds/:id/start-now", "/api/v1/events/rounds/:id/start-now"], authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const roundId = req.params.id;
+
+    const round = await prisma.round.findUnique({ where: { id: roundId } });
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    const updatedRound = await handleRoundStatusChange(round.eventId, roundId, "LIVE");
+    res.json({
+      status: "active",
+      startedAt: updatedRound.roundEndTime,
+      round: updatedRound
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/rounds/:id - Fetch current round status & info before socket subscription
+app.get(["/api/rounds/:id", "/api/v1/rounds/:id", "/api/v1/events/rounds/:id/status-details"], authenticateUser, async (req: any, res: any) => {
+  try {
+    const roundId = req.params.id;
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+      include: { questions: true }
+    });
+
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    if (req.user.role !== "ADMIN" && round.questions) {
+      round.questions.forEach((q: any) => {
+        delete q.correctAnswer;
+        delete q.explanation;
+      });
+    }
+
+    const rawStatus = round.status;
+    const normalizedStatus = rawStatus === "COUNTDOWN" ? "countdown" : (rawStatus === "LIVE" ? "active" : (rawStatus === "ENDED" ? "ended" : "waiting"));
+
+    res.json({
+      round,
+      status: normalizedStatus,
+      rawStatus,
+      startsAt: round.countdownEndTime,
+      startedAt: round.roundEndTime,
+      serverTime: new Date().toISOString()
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -560,13 +756,18 @@ app.post("/api/v1/events/:id/duplicate", authenticateUser, async (req: any, res:
 app.get("/api/v1/events/:id/participants", authenticateUser, async (req: any, res: any) => {
   try {
     if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const eventId = req.params.id;
+
     const participants = await prisma.eventParticipant.findMany({
-      where: { eventId: req.params.id },
+      where: { eventId },
       include: {
         user: {
           include: {
             submissions: {
-              where: { eventId: req.params.id }
+              where: { eventId }
+            },
+            roundAttempts: {
+              where: { eventId }
             }
           }
         }
@@ -574,14 +775,18 @@ app.get("/api/v1/events/:id/participants", authenticateUser, async (req: any, re
     });
 
     const data = participants.map(p => {
-      const totalPoints = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
+      const submissionPoints = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
+      const mcqPoints = (p.user.roundAttempts || []).reduce((sum, a) => sum + (a.score || 0), 0);
+      const totalPoints = submissionPoints + mcqPoints;
+      const totalSubmissions = p.user.submissions.length + (p.user.roundAttempts || []).length;
+
       return {
         id: p.user.id,
         name: p.user.name,
         email: p.user.email,
         joinedAt: p.joinedAt,
         tabSwitches: p.tabSwitches,
-        submissions: p.user.submissions.length,
+        submissions: totalSubmissions,
         totalPoints
       };
     });
@@ -669,6 +874,355 @@ app.post("/api/v1/events/rounds/:roundId/verify", authenticateUser, async (req: 
   }
 });
 
+// Fetch or Initialize Participant Attempt for an MCQ round
+app.get("/api/v1/events/rounds/:roundId/attempt", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { roundId } = req.params;
+    const userId = req.user.id;
+
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+      include: { questions: true }
+    });
+
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    // Strip answers if participant
+    if (req.user.role !== "ADMIN" && round.questions) {
+      round.questions.forEach((q: any) => {
+        delete q.correctAnswer;
+        delete q.explanation;
+      });
+    }
+
+    let attempt = await prisma.roundAttempt.findUnique({
+      where: { roundId_userId: { roundId, userId } }
+    });
+
+    if (!attempt) {
+      attempt = await prisma.roundAttempt.create({
+        data: {
+          roundId,
+          userId,
+          eventId: round.eventId,
+          status: "IN_PROGRESS",
+          answers: {},
+          markedForReview: []
+        }
+      });
+    }
+
+    let remainingRoundSeconds = 0;
+    if (round.roundEndTime) {
+      const endMs = new Date(round.roundEndTime).getTime();
+      remainingRoundSeconds = Math.max(0, Math.floor((endMs - Date.now()) / 1000));
+    } else if (round.status === "LIVE" && round.durationMinutes) {
+      remainingRoundSeconds = round.durationMinutes * 60;
+    }
+
+    res.json({
+      attempt,
+      round,
+      remainingRoundSeconds,
+      serverTime: new Date().toISOString()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Save MCQ draft answers & marked-for-review state
+app.post("/api/v1/events/rounds/:roundId/attempt/save", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { roundId } = req.params;
+    const userId = req.user.id;
+    const { answers, markedForReview } = req.body;
+
+    let attempt = await prisma.roundAttempt.findUnique({
+      where: { roundId_userId: { roundId, userId } }
+    });
+
+    if (attempt && attempt.status !== "IN_PROGRESS") {
+      return res.status(400).json({ error: "Attempt has already been submitted" });
+    }
+
+    const round = await prisma.round.findUnique({ where: { id: roundId } });
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    attempt = await prisma.roundAttempt.upsert({
+      where: { roundId_userId: { roundId, userId } },
+      update: {
+        answers: answers || {},
+        markedForReview: markedForReview || []
+      },
+      create: {
+        roundId,
+        userId,
+        eventId: round.eventId,
+        status: "IN_PROGRESS",
+        answers: answers || {},
+        markedForReview: markedForReview || []
+      }
+    });
+
+    res.json(attempt);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Submit MCQ Attempt (Calculates score on backend, NO negative marking)
+app.post("/api/v1/events/rounds/:roundId/attempt/submit", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { roundId } = req.params;
+    const userId = req.user.id;
+    const submittedAnswers = req.body.answers;
+
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+      include: { questions: true }
+    });
+
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    let attempt = await prisma.roundAttempt.findUnique({
+      where: { roundId_userId: { roundId, userId } }
+    });
+
+    if (attempt && attempt.status !== "IN_PROGRESS") {
+      return res.json({ message: "Attempt already submitted", attempt });
+    }
+
+    const finalAnswers = submittedAnswers || (attempt?.answers as Record<string, string>) || {};
+
+    let score = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+    let unansweredCount = 0;
+
+    const marksPerCorrect = round.marksPerCorrect || 1;
+
+    round.questions.forEach((q) => {
+      const selectedOption = finalAnswers[q.id];
+      if (selectedOption && q.correctAnswer && selectedOption === q.correctAnswer) {
+        correctCount++;
+        score += marksPerCorrect;
+      } else if (selectedOption) {
+        wrongCount++;
+        // NO negative marking: 0 points added
+      } else {
+        unansweredCount++;
+      }
+    });
+
+    attempt = await prisma.roundAttempt.upsert({
+      where: { roundId_userId: { roundId, userId } },
+      update: {
+        status: "SUBMITTED",
+        submittedAt: new Date(),
+        score,
+        correctCount,
+        wrongCount,
+        unansweredCount,
+        answers: finalAnswers
+      },
+      create: {
+        roundId,
+        userId,
+        eventId: round.eventId,
+        status: "SUBMITTED",
+        submittedAt: new Date(),
+        score,
+        correctCount,
+        wrongCount,
+        unansweredCount,
+        answers: finalAnswers,
+        markedForReview: []
+      }
+    });
+
+    io.to(`event_${round.eventId}_admin`).emit("attempt_submitted", {
+      roundId,
+      userId,
+      score,
+      correctCount,
+      wrongCount,
+      unansweredCount
+    });
+
+    res.json({ success: true, attempt });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin: Force submit all active participant attempts
+app.post("/api/v1/events/rounds/:roundId/force-submit-all", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { roundId } = req.params;
+
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+      include: { questions: true }
+    });
+
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    const attempts = await prisma.roundAttempt.findMany({
+      where: { roundId, status: "IN_PROGRESS" }
+    });
+
+    const marksPerCorrect = round.marksPerCorrect || 1;
+
+    for (const attempt of attempts) {
+      const finalAnswers = (attempt.answers as Record<string, string>) || {};
+      let score = 0;
+      let correctCount = 0;
+      let wrongCount = 0;
+      let unansweredCount = 0;
+
+      round.questions.forEach((q) => {
+        const selectedOption = finalAnswers[q.id];
+        if (selectedOption && q.correctAnswer && selectedOption === q.correctAnswer) {
+          correctCount++;
+          score += marksPerCorrect;
+        } else if (selectedOption) {
+          wrongCount++;
+        } else {
+          unansweredCount++;
+        }
+      });
+
+      await prisma.roundAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "FORCE_SUBMITTED",
+          submittedAt: new Date(),
+          score,
+          correctCount,
+          wrongCount,
+          unansweredCount
+        }
+      });
+    }
+
+    io.to(`event_${round.eventId}`).emit("round_force_submitted", { roundId });
+
+    res.json({ success: true, submittedCount: attempts.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin: List participant attempts for a round
+app.get("/api/v1/events/rounds/:roundId/admin/participant-attempts", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { roundId } = req.params;
+
+    const attempts = await prisma.roundAttempt.findMany({
+      where: { roundId },
+      include: {
+        user: {
+          select: { id: true, name: true, email: true, usn: true, branch: true, year: true }
+        }
+      },
+      orderBy: { score: "desc" }
+    });
+
+    res.json(attempts);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin: Inspect detailed answers for a specific participant
+app.get("/api/v1/events/rounds/:roundId/admin/participant-answers/:userId", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { roundId, userId } = req.params;
+
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+      include: { questions: true }
+    });
+
+    if (!round) return res.status(404).json({ error: "Round not found" });
+
+    const attempt = await prisma.roundAttempt.findUnique({
+      where: { roundId_userId: { roundId, userId } },
+      include: { user: true }
+    });
+
+    const userAnswers = (attempt?.answers as Record<string, string>) || {};
+    const marksPerCorrect = round.marksPerCorrect || 1;
+
+    const details = round.questions.map((q) => {
+      const selectedOption = userAnswers[q.id] || null;
+      let result: "CORRECT" | "WRONG" | "UNANSWERED" = "UNANSWERED";
+      let marksAwarded = 0;
+
+      if (selectedOption) {
+        if (selectedOption === q.correctAnswer) {
+          result = "CORRECT";
+          marksAwarded = marksPerCorrect;
+        } else {
+          result = "WRONG";
+          marksAwarded = 0;
+        }
+      }
+
+      return {
+        questionId: q.id,
+        questionText: q.text,
+        options: q.options,
+        selectedAnswer: selectedOption,
+        correctAnswer: q.correctAnswer,
+        result,
+        marksAwarded
+      };
+    });
+
+    res.json({
+      attempt,
+      user: attempt?.user,
+      details,
+      round
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin: Toggle results released state
+app.patch("/api/v1/events/rounds/:roundId/release-results", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Access denied" });
+    const { roundId } = req.params;
+    const { resultsReleased } = req.body;
+
+    const updatedRound = await prisma.round.update({
+      where: { id: roundId },
+      data: { resultsReleased: !!resultsReleased }
+    });
+
+    io.to(`event_${updatedRound.eventId}`).emit("results_released_update", {
+      roundId,
+      resultsReleased: updatedRound.resultsReleased
+    });
+
+    res.json(updatedRound);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Express 404 JSON Fallback Handler
+app.use((req: any, res: any) => {
+  res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found` });
+});
+
 // --- Socket.IO Handlers ---
 
 const io = new Server(server, {
@@ -679,6 +1233,7 @@ const io = new Server(server, {
   }
 });
 const activeEventTimers: Record<string, NodeJS.Timeout> = {};
+const activeRoundTimers: Record<string, NodeJS.Timeout> = {};
 const activeQuestionIndex: Record<string, number> = {};
 const gameState: Record<string, "waiting" | "question" | "revealed" | "finished"> = {};
 const autoplayMode: Record<string, boolean> = {};
@@ -817,6 +1372,9 @@ async function calculateLeaderboard(eventId: string) {
         include: {
           submissions: {
             where: { eventId }
+          },
+          roundAttempts: {
+            where: { eventId }
           }
         }
       }
@@ -824,7 +1382,9 @@ async function calculateLeaderboard(eventId: string) {
   });
 
   return participants.map(p => {
-    const points = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
+    const submissionPoints = p.user.submissions.reduce((sum, s) => sum + s.pointsAwarded, 0);
+    const mcqPoints = (p.user.roundAttempts || []).reduce((sum, a) => sum + (a.score || 0), 0);
+    const points = submissionPoints + mcqPoints;
     return {
       name: p.user.name,
       points
@@ -839,16 +1399,44 @@ const sendRoomCount = (eventId: string) => {
 };
 
 io.on("connection", (socket) => {
-  socket.on("join_event", (eventId) => {
+  socket.on("join_event", async (eventId) => {
     socket.join(`event_${eventId}`);
     sendRoomCount(eventId);
+
+    try {
+      const rounds = await prisma.round.findMany({
+        where: { eventId },
+        orderBy: { roundOrder: "asc" }
+      });
+      socket.emit("initial_round_state", {
+        rounds,
+        serverTime: new Date().toISOString()
+      });
+    } catch (e) { console.error(e); }
   });
 
-  socket.on("join_admin", (eventId) => {
+  socket.on("join_admin", async (eventId) => {
     socket.join(`event_${eventId}`);
     socket.join(`event_${eventId}_admin`);
     sendRoomCount(eventId);
     sendAdminState(eventId);
+
+    try {
+      const rounds = await prisma.round.findMany({
+        where: { eventId },
+        orderBy: { roundOrder: "asc" }
+      });
+      socket.emit("initial_round_state", {
+        rounds,
+        serverTime: new Date().toISOString()
+      });
+    } catch (e) { console.error(e); }
+  });
+
+  socket.on("admin_update_round_status", async ({ eventId, roundId, status, durationSeconds }) => {
+    try {
+      await handleRoundStatusChange(eventId, roundId, status, durationSeconds);
+    } catch (e) { console.error(e); }
   });
 
   socket.on("admin_push_question", async ({ eventId, questionId }) => {

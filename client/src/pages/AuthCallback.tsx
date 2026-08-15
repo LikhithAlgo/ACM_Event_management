@@ -20,13 +20,9 @@ export function AuthCallback() {
       try {
         // Check the user's role from our backend
         const user = await fetchApi('/events/me');
-        const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+        const didRedirect = redirectToHost(user.role, '/dashboard');
         if (didRedirect) return;
-        if (user.role === 'ADMIN') {
-          navigate('/admin');
-        } else {
-          navigate('/dashboard');
-        }
+        navigate('/dashboard');
       } catch {
         // If /me fails, still redirect to dashboard
         navigate('/dashboard');
@@ -40,13 +36,9 @@ export function AuthCallback() {
         if (event === 'SIGNED_IN' && session) {
           try {
             const user = await fetchApi('/events/me');
-            const didRedirect = redirectToHost(user.role, user.role === 'ADMIN' ? '/admin' : '/dashboard');
+            const didRedirect = redirectToHost(user.role, '/dashboard');
             if (didRedirect) return;
-            if (user.role === 'ADMIN') {
-              navigate('/admin');
-            } else {
-              navigate('/dashboard');
-            }
+            navigate('/dashboard');
           } catch {
             navigate('/dashboard');
           }
